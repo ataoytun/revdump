@@ -185,6 +185,17 @@ impl Cli {
             ));
         }
 
+        // -closemon is a modifier on a single PID, not a scope. System-wide termination monitoring
+        // would need a kernel callback or injection (both out of scope), so reject every non-pid
+        // form here — including bare -closemon — with its own message rather than the generic one.
+        if closemon && pid.is_none() {
+            return Err(RevError::Cli(
+                "-closemon requires -pid (dump a specific process just before it exits); \
+                 system-wide monitoring is not supported"
+                    .into(),
+            ));
+        }
+
         let scope = if let Some(pid) = pid {
             Scope::Pid(pid)
         } else if let Some(regex) = name {
@@ -193,12 +204,9 @@ impl Cli {
             Scope::Launch(path.to_string_lossy().into_owned())
         } else if system {
             Scope::System
-        } else if closemon {
-            // Bare -closemon == system-wide best-effort monitoring.
-            Scope::System
         } else {
             return Err(RevError::Cli(
-                "no target: specify -pid, -p, -system, --launch, or -closemon".into(),
+                "no target: specify -pid, -p, -system, or --launch".into(),
             ));
         };
 
@@ -339,12 +347,24 @@ mod tests {
     }
 
     #[test]
-    fn bare_closemon_implies_system_scope() {
+    fn closemon_requires_pid() {
+        // Bare -closemon and -closemon -system are rejected: no system-wide monitoring.
         let mut c = base();
         c.closemon = true;
+        assert!(c.into_action().is_err());
+
+        let mut c = base();
+        c.closemon = true;
+        c.system = true;
+        assert!(c.into_action().is_err());
+
+        // -closemon -pid X is the one supported form.
+        let mut c = base();
+        c.closemon = true;
+        c.pid = Some(42);
         match c.into_action().unwrap() {
             Action::Dump(spec) => {
-                assert!(matches!(spec.scope, Scope::System));
+                assert!(matches!(spec.scope, Scope::Pid(42)));
                 assert!(spec.closemon);
             }
             other => panic!("expected dump, got {other:?}"),

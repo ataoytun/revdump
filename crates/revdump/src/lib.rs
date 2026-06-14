@@ -107,6 +107,10 @@ fn dispatch_dump(spec: cli::DumpSpec) -> Result<i32> {
         (cli::Scope::Launch(cmd), None, false, oep) => {
             run_launch(cmd, spec.hide, oep, &spec.out, spec.minidump)
         }
+        // -p <regex>: dump every accessible process whose image name matches.
+        (cli::Scope::NameRegex(rx), None, false, false) => {
+            run_name_regex(rx, &spec.out, spec.minidump)
+        }
         // -system: dump every accessible process's main image.
         (cli::Scope::System, None, false, false) => run_system_sweep(&spec.out, spec.minidump),
         _ => {
@@ -116,8 +120,10 @@ fn dispatch_dump(spec: cli::DumpSpec) -> Result<i32> {
                 cli::Scope::System => "system".to_string(),
                 cli::Scope::Launch(cmd) => format!("launch {cmd}"),
             };
-            eprintln!("revdump: dump mode for {what} not implemented yet");
-            Ok(0)
+            // Don't report success for a flag combination we don't actually run.
+            Err(RevError::Cli(format!(
+                "dump mode for {what} is not supported"
+            )))
         }
     }
 }
@@ -392,6 +398,50 @@ fn region_note(
         status: status.into(),
         reason,
     }
+}
+
+// -p <regex>: dump each accessible process whose leaf image name matches. Per-pid failures (access
+// denied, wrong arch) degrade to skips so one unreadable process doesn't sink the batch.
+fn run_name_regex(pattern: &str, out: &std::path::Path, minidump: bool) -> Result<i32> {
+    enable_se_debug();
+    let re =
+        regex::Regex::new(pattern).map_err(|e| RevError::Cli(format!("invalid -p regex: {e}")))?;
+    let me = std::process::id();
+    let (mut matched, mut dumped, mut skipped) = (0u32, 0u32, 0u32);
+    for pid in triggers::sweep::enumerate_pids() {
+        if pid == me {
+            continue;
+        }
+        let Some(name) = access::open::image_base_name(pid) else {
+            continue;
+        };
+        if !re.is_match(&name) {
+            continue;
+        }
+        matched += 1;
+        match dump_target_by_pid(pid, out, minidump) {
+            Ok(()) => {
+                dumped += 1;
+                vlog!(1, "dumped {name} (pid {pid})");
+            }
+            Err(RevError::ArchMismatch(_)) => {
+                skipped += 1;
+                vlog!(1, "{name} (pid {pid}): wrong arch");
+            }
+            Err(err) => {
+                skipped += 1;
+                vlog!(2, "skipped {name} (pid {pid}): {err}");
+            }
+        }
+    }
+    println!("name sweep: matched {matched}, dumped {dumped}, skipped {skipped}");
+    Ok(0)
+}
+
+// Open + full dump pipeline for one pid, returning () — the per-pid unit the name sweep batches.
+fn dump_target_by_pid(pid: u32, out: &std::path::Path, minidump: bool) -> Result<()> {
+    let proc = access::open::open_process(pid)?;
+    dump_target(proc.handle(), pid, out, minidump).map(|_| ())
 }
 
 // -system: dump every accessible process's main image.

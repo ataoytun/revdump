@@ -14,4 +14,4 @@ goblin = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
-# regex is wired in when the name-regex scope lands.
+regex = { workspace = true }

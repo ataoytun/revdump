@@ -1,6 +1,7 @@
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_ACCESS_DENIED, HANDLE};
 use windows_sys::Win32::System::Threading::{
-    OpenProcess, PROCESS_QUERY_INFORMATION, PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
+    OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_INFORMATION,
+    PROCESS_QUERY_LIMITED_INFORMATION, PROCESS_VM_READ,
 };
 
 use crate::error::{Result, RevError};
@@ -63,6 +64,28 @@ fn probe_protection(pid: u32) -> Option<String> {
         Ok(p) if p.is_protected() => Some(describe_protection(p)),
         _ => None,
     }
+}
+
+/// The leaf image name of `pid` (e.g. "notepad.exe"), for the `-p` name-regex scope. Uses
+/// PROCESS_QUERY_LIMITED_INFORMATION, grantable on most targets that deny the heavier read rights —
+/// so the match set isn't silently narrowed to processes we could already fully open.
+pub fn image_base_name(pid: u32) -> Option<String> {
+    // SAFETY: plain Win32 call; null signals failure.
+    let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
+    if handle.is_null() {
+        return None;
+    }
+    let guard = OwnedProcess { handle };
+    let mut buf = [0u16; 260]; // MAX_PATH
+    let mut len = buf.len() as u32;
+    // SAFETY: QueryFullProcessImageNameW writes up to `len` UTF-16 units and updates `len`. Flag 0
+    // = Win32 path format.
+    let ok = unsafe { QueryFullProcessImageNameW(guard.handle(), 0, buf.as_mut_ptr(), &mut len) };
+    if ok == 0 {
+        return None;
+    }
+    let full = String::from_utf16_lossy(&buf[..len as usize]);
+    Some(full.rsplit(['\\', '/']).next().unwrap_or(&full).to_string())
 }
 
 fn describe_protection(p: PsProtection) -> String {
