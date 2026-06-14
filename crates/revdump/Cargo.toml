@@ -11,4 +11,6 @@ clap = { workspace = true }
 thiserror = { workspace = true }
 windows-sys = { workspace = true }
 goblin = { workspace = true }
-# regex, sha2, serde, serde_json are wired in per-milestone as the layers that need them land.
+serde = { workspace = true }
+serde_json = { workspace = true }
+# regex, sha2 are wired in per-milestone as the layers that need them land.

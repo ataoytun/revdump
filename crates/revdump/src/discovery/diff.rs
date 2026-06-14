@@ -34,10 +34,13 @@ pub struct ModuleDiff {
 
 impl ModuleDiff {
     pub fn is_suspicious(&self) -> bool {
-        self.name_mismatch.is_some()
-            || self.image_base_mismatch
-            || self.header_modified
-            || !self.hooks.is_empty()
+        self.is_hollowed() || !self.hooks.is_empty()
+    }
+
+    /// Hollowing-specific signals only (header/name/base replacement) — deliberately excludes
+    /// inline hooks, which on modern Windows are dominated by benign loader import-optimization.
+    pub fn is_hollowed(&self) -> bool {
+        self.name_mismatch.is_some() || self.image_base_mismatch || self.header_modified
     }
 }
 

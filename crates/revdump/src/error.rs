@@ -26,6 +26,9 @@ pub enum RevError {
     #[error("reconstruction failed: {0}")]
     Reconstruct(String),
 
+    #[error("output failed: {0}")]
+    Output(String),
+
     #[error("{call} failed (NTSTATUS {status:#010x})")]
     Nt { call: &'static str, status: u32 },
 

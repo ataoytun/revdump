@@ -12,7 +12,6 @@ use crate::error::{Result, RevError};
 
 pub struct DumpArtifact {
     pub bytes: Vec<u8>,
-    pub base: usize,
     pub unreadable_pages: usize,
 }
 
@@ -26,7 +25,6 @@ pub fn dump_module_image<R: MemoryReader>(reader: &R, base: usize) -> Result<Dum
     devirt::memory_align(&mut bytes)?;
     Ok(DumpArtifact {
         bytes,
-        base,
         unreadable_pages: gaps.len(),
     })
 }
@@ -37,7 +35,6 @@ pub fn dump_code_chunk<R: MemoryReader>(reader: &R, base: usize, size: usize) ->
     let (code, gaps) = read_best_effort(reader, base, size);
     DumpArtifact {
         bytes: header::synthesize_pe(base, &code),
-        base,
         unreadable_pages: gaps.len(),
     }
 }
