@@ -9,10 +9,13 @@ revdump exists to extract the **original unpacked code** from packed, obfuscated
 processes and write it back out as a PE that **loads cleanly into IDA/Ghidra with a sane import
 table**. The reconstruction quality is the point — not merely capturing bytes.
 
-> **Status: early development.** The architecture, CLI surface, and build are in place; the
-> dumping layers are landing milestone by milestone. See `crates/revdump/src/` for current scope.
+> **Status: feature-complete across the planned scope.** All six layers — access, discovery,
+> reconstruction, triggers, filtering, output — plus the external-debugger engine and the
+> debugger-driven anti-debug layer are implemented and build clean (clippy `-D warnings`, rustfmt)
+> on both architectures. It is a working RE tool, not a hardened product: expect rough edges on
+> exotic packers. See `crates/revdump/src/` for the module layout.
 
-## What it does (target scope)
+## What it does
 
 - **Access** — acquire `SeDebugPrivilege`, open targets with NTAPI/Win32 read backends and
   graceful fallback, walk the PEB/LDR manually (packers corrupt the documented loader data), and
@@ -26,7 +29,13 @@ table**. The reconstruction quality is the point — not merely capturing bytes.
   (locate IAT, resolve thunks, rebuild the import directory; handle forwarded exports and
   API-redirection stubs).
 - **Triggers** — dump on address/breakpoint, on a target API call, on new executable allocation,
-  on process termination (`-closemon`), plus a full-system sweep, with OEP-detection heuristics.
+  on process termination (`-closemon`), plus a full-system sweep. Launch a target under the
+  debugger (`-launch`) so patches land before its first TLS callback, and let the OEP finder
+  (`-oep`) catch the jump into unpacked code via a W^X guard flip and dump there.
+- **Anti-debug** — at the initial loader breakpoint, neutralize the PEB/heap debugger tells
+  (`BeingDebugged`, `NtGlobalFlag`, heap flags) and intercept the debug-detection NTAPI results
+  (`NtQueryInformationProcess` debug classes, `NtSetInformationThread(HideFromDebugger)`), all
+  driven by breakpoints with no injection (`-hide`).
 - **Filtering** — a clean-hash database to exclude known-good modules so only novel code surfaces.
 - **Output** — per-region JSON metadata sidecar, parseable filenames, and a separate minidump
   (`.dmp`) export path.
@@ -54,7 +63,10 @@ via the aliases in `.cargo/config.toml`).
 revdump64 -pid <pid>            dump a process by PID (accepts 0x hex)
 revdump64 -p <regex>            dump all processes whose name matches the regex
 revdump64 -system               dump all accessible processes
+revdump64 -launch <exe>         launch the target under the debugger and dump it
 revdump64 -pid <pid> -a <addr>  dump a specific address in the target
+revdump64 -oep                  find the original entry point and dump there
+revdump64 -hide                 neutralize anti-debug checks while dumping
 revdump64 -o <path>             output directory (default: cwd)
 revdump64 -closemon [scope]     dump processes just before they exit
 revdump64 -db gen|add|rem|clean manage the clean-hash database
@@ -65,9 +77,12 @@ revdump64 -v                    verbose (repeatable)
 The legacy single-dash long flags above and their `--double-dash` equivalents are both accepted.
 
 **Validation:** `-db` is a standalone mode (no target/dump options alongside it); otherwise pick
-exactly one scope (`-pid` / `-p` / `-system`). `-closemon` is a mode modifier that combines with a
-scope (`-closemon -pid X` dumps X just before it exits); bare `-closemon` means system-wide
-best-effort monitoring. `-a` requires `-pid`.
+exactly one scope (`-pid` / `-p` / `-system` / `-launch`). `-closemon` is a mode modifier that
+combines with a scope (`-closemon -pid X` dumps X just before it exits); bare `-closemon` means
+system-wide best-effort monitoring. `-a` requires `-pid`. `-oep` requires `-pid` or `-launch`.
+`-hide` requires `-launch`, `-a`, or `-oep` (it needs the debugger engine). Launching the target
+yourself (`-launch`) is what lets the anti-debug patches land *before* the first TLS callback;
+attaching to an already-running process (`-pid`) only sees its post-startup state.
 
 ## Design notes & honest limitations
 

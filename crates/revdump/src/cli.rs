@@ -12,7 +12,7 @@ use crate::error::{Result, RevError};
     about = "User-mode reverse-engineering memory dumper",
     long_about = "Dumps and reconstructs process memory into IDA/Ghidra-loadable PE files.\n\n\
 Mirrors Process Dump's CLI: the legacy single-dash long flags (-pid, -system, -closemon, -db, \
--minidump) are accepted alongside their --double-dash forms."
+-minidump, -oep, -launch, -hide) are accepted alongside their --double-dash forms."
 )]
 pub struct Cli {
     /// Dump a process by PID (decimal, or 0x-prefixed hex)
@@ -48,7 +48,7 @@ pub struct Cli {
     #[arg(long = "minidump")]
     pub minidump: bool,
 
-    /// Detect a packed target's original entry point and dump there (requires --pid)
+    /// Detect a packed target's original entry point and dump there (requires --pid or --launch)
     #[arg(long = "oep")]
     pub oep: bool,
 
