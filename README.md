@@ -68,7 +68,7 @@ revdump64 -pid <pid> -a <addr>  dump a specific address in the target
 revdump64 -oep                  find the original entry point and dump there
 revdump64 -hide                 neutralize anti-debug checks while dumping
 revdump64 -o <path>             output directory (default: cwd)
-revdump64 -closemon [scope]     dump processes just before they exit
+revdump64 -closemon -pid <pid>  dump that process at its voluntary exit
 revdump64 -db gen|add|rem|clean manage the clean-hash database
 revdump64 -minidump             also write a .dmp alongside the PE dumps
 revdump64 -v                    verbose (repeatable)
@@ -77,12 +77,12 @@ revdump64 -v                    verbose (repeatable)
 The legacy single-dash long flags above and their `--double-dash` equivalents are both accepted.
 
 **Validation:** `-db` is a standalone mode (no target/dump options alongside it); otherwise pick
-exactly one scope (`-pid` / `-p` / `-system` / `-launch`). `-closemon` is a mode modifier that
-combines with a scope (`-closemon -pid X` dumps X just before it exits); bare `-closemon` means
-system-wide best-effort monitoring. `-a` requires `-pid`. `-oep` requires `-pid` or `-launch`.
-`-hide` requires `-launch`, `-a`, or `-oep` (it needs the debugger engine). Launching the target
-yourself (`-launch`) is what lets the anti-debug patches land *before* the first TLS callback;
-attaching to an already-running process (`-pid`) only sees its post-startup state.
+exactly one scope (`-pid` / `-p` / `-system` / `-launch`). `-closemon` is a modifier on `-pid`
+(`-closemon -pid X` dumps X at its voluntary exit); it is not a scope, and system-wide monitoring is
+not supported. `-a` requires `-pid`. `-oep` requires `-pid` or `-launch`. `-hide` requires
+`-launch`, `-a`, or `-oep` (it needs the debugger engine). Launching the target yourself (`-launch`)
+is what lets the anti-debug patches land *before* the first TLS callback; attaching to an
+already-running process (`-pid`) only sees its post-startup state.
 
 ## Design notes & honest limitations
 
@@ -91,12 +91,26 @@ attaching to an already-running process (`-pid`) only sees its post-startup stat
   packer, or payload mechanism.
 - **Memory-aligned dumps by default** (RVA == file offset) so dumps map identically to their
   in-memory layout and load without fixups.
-- **Anti-debug neutralization runs at the initial loader breakpoint** — before the first TLS
-  callback or entry-point code — because that is where packers fire their first
-  `IsDebuggerPresent` / `NtGlobalFlag` check.
-- **`-closemon` is best-effort system-wide.** Reliable for processes revdump launches/attaches to;
-  catching unrelated, brand-new short-lived processes is inherently racy without a kernel callback
-  or injection (both out of scope).
+- **One architecture per binary.** `revdump64` dumps 64-bit targets, `revdump32` dumps 32-bit; a
+  cross-architecture target (e.g. a 32-bit WOW64 process under `revdump64`) is refused up front
+  (and skipped, not dumped, under `-system`/`-p`) — reading its foreign-bitness PEB/LDR would only
+  yield import-less, mis-classified output. Run the matching binary.
+- **Anti-debug neutralization runs at the initial loader breakpoint.** Under `-launch` that precedes
+  the first TLS callback / the entry point — where packers fire their first `IsDebuggerPresent` /
+  `NtGlobalFlag` check. On attach (`-oep`/`-a` against a running pid) the breakpoint fires after
+  startup, so checks that already ran are not retroactively defeated.
+- **Import recovery is direct-pointer.** An IAT slot is resolved by matching the pointer it holds
+  against a loaded module's export. IAT entries redirected through a packer's own stub (rather than
+  pointing straight at an export) are not resolved, and address-based resolution names the real host
+  DLL the export lives in (e.g. `kernelbase`/`ntdll`), not the original `api-ms-win-*` ApiSet /
+  forwarder name.
+- **OEP detection is single-stage.** It dumps at the first flip-and-execute of freshly-executable
+  memory, so a multi-stage or VM-protected packer may stop at an intermediate stage rather than the
+  final original entry point.
+- **`-closemon` catches voluntary exit only, and requires `-pid`.** It breakpoints the target's own
+  `NtTerminateProcess`; an external `TerminateProcess` from another process tears the address space
+  down in the kernel first. System-wide monitoring is not supported — reliable external
+  termination / new-process notification needs a kernel callback or injection (both out of scope).
 - **Native PE only.** A .NET/managed assembly dumps to meaningless native bytes (the real logic is
   JIT-compiled IL) — managed targets are out of scope.
 - **Not a commercial-protector unpacker.** TLS-callback handling improves coverage against packers,

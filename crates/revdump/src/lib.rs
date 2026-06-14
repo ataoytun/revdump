@@ -198,7 +198,8 @@ fn run_closemon(pid: u32, out: &std::path::Path, minidump: bool) -> Result<i32> 
     Ok(if caught { 0 } else { 1 })
 }
 
-// Neutralize common anti-debug checks at the initial loader breakpoint (before TLS/EP).
+// Neutralize common anti-debug checks at the initial loader breakpoint (before TLS/EP under
+// --launch; after startup on attach).
 fn apply_hide(process: HANDLE) -> Result<()> {
     let peb_base = nt::peb_base(process)?;
     antidebug::peb_patch::neutralize(process, peb_base)?;

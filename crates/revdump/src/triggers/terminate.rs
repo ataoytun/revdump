@@ -4,9 +4,11 @@ use crate::debug::engine::{Debugger, Stop};
 use crate::debug::symbols::ntdll_export;
 use crate::error::{Result, RevError};
 
-// Every exit path (ExitProcess, return-from-main, CLR shutdown, ...) funnels through the
-// NtTerminateProcess syscall as its final step, so breakpointing it catches the process at the
-// last moment its memory is fully intact — ideal for short-lived stages.
+// A process's own voluntary exit (ExitProcess / return-from-main / RtlExitUserProcess) funnels
+// through the NtTerminateProcess syscall, so breakpointing it catches the process at the last
+// moment its memory is fully intact — ideal for short-lived stages. Voluntary-exit only: an
+// external TerminateProcess from another process tears the address space down in the kernel
+// without running this self-exit path, so it can't be caught here.
 const EXIT_FUNCTION: &str = "NtTerminateProcess";
 
 /// Attach to `pid`, breakpoint the exit path, and invoke `on_exit` with the target handle when the

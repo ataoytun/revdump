@@ -23,9 +23,9 @@ const HEAP_FORCE_FLAGS_OFFSET: usize = 0x44;
 const HEAP_GROWABLE: u32 = 0x0000_0002;
 const PTR: usize = core::mem::size_of::<usize>();
 
-/// Normalize the PEB/heap fields packers read to detect a debugger. This must run at the initial
-/// loader breakpoint — before TLS callbacks / the entry point — because that is where a packer
-/// fires its first IsDebuggerPresent / NtGlobalFlag check.
+/// Normalize the PEB/heap fields packers read to detect a debugger. Applied at the initial loader
+/// breakpoint, which precedes the first TLS callback / the entry point only under --launch; on
+/// attach it fires post-startup, so a pre-EP check may already have run.
 pub fn neutralize(process: HANDLE, peb_base: usize) -> Result<()> {
     // BeingDebugged = 0 — what IsDebuggerPresent() returns.
     nt::write_memory(process, peb_base + offset_of!(Peb, being_debugged), &[0u8])?;

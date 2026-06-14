@@ -35,8 +35,8 @@ pub struct Cli {
     #[arg(short = 'o', long = "out", value_name = "PATH", default_value = ".")]
     pub out: PathBuf,
 
-    /// Terminate-monitor: dump processes just before they exit (combine with a scope, or run
-    /// bare for system-wide best-effort monitoring)
+    /// Terminate-monitor: dump a process at its voluntary exit. Requires -pid; system-wide
+    /// monitoring is not supported (needs a kernel callback or injection, both out of scope)
     #[arg(long = "closemon")]
     pub closemon: bool,
 
@@ -57,7 +57,8 @@ pub struct Cli {
     pub launch: Option<PathBuf>,
 
     /// Neutralize common anti-debug checks (BeingDebugged, NtGlobalFlag, heap flags) at the
-    /// initial loader breakpoint, before TLS callbacks / the entry point
+    /// initial loader breakpoint (before TLS callbacks / the entry point under --launch; after
+    /// startup on attach)
     #[arg(long = "hide")]
     pub hide: bool,
 
