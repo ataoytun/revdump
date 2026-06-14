@@ -89,30 +89,26 @@ fn manage_db(action: cli::DbAction) -> Result<i32> {
 
 fn dispatch_dump(spec: cli::DumpSpec) -> Result<i32> {
     vlog!(2, "output dir: {}", spec.out.display());
-    if spec.minidump {
-        vlog!(1, "minidump export requested (pending later milestone)");
-    }
-    match (&spec.scope, spec.addr, spec.closemon) {
-        // The single-PID path: discovery, reconstruction, dump + manifest (+ optional minidump).
-        (cli::Scope::Pid(pid), None, false) => dump_pid(*pid, &spec.out, spec.minidump),
-        // -a: attach as a debugger and dump when execution reaches the address.
-        (cli::Scope::Pid(pid), Some(addr), false) => {
+    match (&spec.scope, spec.addr, spec.closemon, spec.oep) {
+        // Plain dump by PID: discovery, reconstruction, dump + manifest (+ optional minidump).
+        (cli::Scope::Pid(pid), None, false, false) => dump_pid(*pid, &spec.out, spec.minidump),
+        // -a: attach and dump when execution reaches the address.
+        (cli::Scope::Pid(pid), Some(addr), false, false) => {
             dump_on_breakpoint(*pid, addr as usize, &spec.out, spec.minidump)
         }
         // -closemon -pid X: dump X just before it exits.
-        (cli::Scope::Pid(pid), None, true) => run_closemon(*pid, &spec.out, spec.minidump),
+        (cli::Scope::Pid(pid), None, true, false) => run_closemon(*pid, &spec.out, spec.minidump),
+        // -oep -pid X: unpack and dump at the original entry point.
+        (cli::Scope::Pid(pid), None, false, true) => run_oep_finder(*pid, &spec.out, spec.minidump),
         // -system: dump every accessible process's main image.
-        (cli::Scope::System, None, false) => run_system_sweep(&spec.out, spec.minidump),
+        (cli::Scope::System, None, false, false) => run_system_sweep(&spec.out, spec.minidump),
         _ => {
             let what = match &spec.scope {
                 cli::Scope::Pid(p) => format!("pid {p}"),
                 cli::Scope::NameRegex(rx) => format!("name ~ /{rx}/"),
                 cli::Scope::System => "system".to_string(),
             };
-            eprintln!(
-                "revdump: dump mode for {what} (addr={:?}, closemon={}) not implemented yet",
-                spec.addr, spec.closemon
-            );
+            eprintln!("revdump: dump mode for {what} not implemented yet");
             Ok(0)
         }
     }
@@ -154,6 +150,8 @@ fn dump_on_breakpoint(pid: u32, addr: usize, out: &std::path::Path, minidump: bo
                 println!("target exited (code {code}) before the breakpoint was reached");
                 break 1;
             }
+            // Pass the target's own exceptions through to it.
+            debug::engine::Stop::Exception { .. } => {}
         }
     };
     dbg.detach()?;
@@ -172,6 +170,86 @@ fn run_closemon(pid: u32, out: &std::path::Path, minidump: bool) -> Result<i32> 
         println!("pid {pid} exited before it could be caught");
     }
     Ok(if caught { 0 } else { 1 })
+}
+
+// -oep: attach, watch the packer make memory executable, strip execute so its jump to the
+// unpacked code faults, and dump at that fault — the original entry point. x64-only for now:
+// reading the VirtualProtect arguments uses the x64 register convention (the x86 reads error out).
+fn run_oep_finder(pid: u32, out: &std::path::Path, minidump: bool) -> Result<i32> {
+    use debug::engine::Stop;
+
+    enable_se_debug();
+    let mut dbg = debug::engine::Debugger::attach(pid)?;
+    let mut execmem = triggers::execmem::ExecMem::default();
+    let protect_fn = debug::symbols::ntdll_export("NtProtectVirtualMemory")
+        .ok_or_else(|| RevError::Access("could not resolve NtProtectVirtualMemory".into()))?;
+    println!("attached to pid {pid}; watching for unpack");
+
+    let mut dumped = false;
+    loop {
+        match dbg.cont()? {
+            Stop::InitialBreak => {
+                // Track TLS callbacks so a pre-EP callback isn't mistaken for the OEP, then arm
+                // the alloc-watch. (Anti-debug patches hook in here at M7.)
+                let peb = nt::read_peb(dbg.process())?;
+                let cbs = debug::tls::callbacks(dbg.process(), peb.image_base_address as usize);
+                if !cbs.is_empty() {
+                    vlog!(1, "tracking {} TLS callback(s)", cbs.len());
+                }
+                execmem.record_tls(&cbs);
+                dbg.set_persistent_breakpoint(protect_fn)?;
+            }
+            // NtProtectVirtualMemory(handle, *BaseAddress, *RegionSize, NewProtect, *OldProtect)
+            Stop::Breakpoint(addr) if addr == protect_fn => {
+                let args = debug::context::read_call_args(dbg.current_thread())?;
+                let new_protect = args[3] as u32;
+                if triggers::oep::is_executable(new_protect) {
+                    let base = read_ptr_field(dbg.process(), args[1])?;
+                    let size = read_ptr_field(dbg.process(), args[2])?;
+                    execmem.watch(base, size, new_protect);
+                    debug::context::set_call_arg(
+                        dbg.current_thread(),
+                        3,
+                        triggers::oep::strip_execute(new_protect) as usize,
+                    )?;
+                    vlog!(1, "flipped exec region {base:#x}..{:#x}", base + size);
+                }
+            }
+            Stop::Exception { code, address, .. }
+                if code == triggers::oep::EXCEPTION_ACCESS_VIOLATION
+                    && !execmem.is_tls_callback(address) =>
+            {
+                if let Some((base, size, orig)) = execmem
+                    .region_of(address)
+                    .map(|r| (r.base, r.size, r.original_protect))
+                {
+                    println!("OEP reached at {address:#x}; dumping");
+                    dbg.protect(base, size, orig)?;
+                    dump_target(dbg.process(), pid, out, minidump)?;
+                    dbg.mark_handled();
+                    dumped = true;
+                    break;
+                }
+            }
+            Stop::Exited(code) => {
+                println!("target exited (code {code}) before the OEP was reached");
+                break;
+            }
+            _ => {}
+        }
+    }
+    dbg.detach()?;
+    Ok(if dumped { 0 } else { 1 })
+}
+
+fn read_ptr_field(process: HANDLE, addr: usize) -> Result<usize> {
+    let mut buf = [0u8; core::mem::size_of::<usize>()];
+    if nt::read_memory(process, addr, &mut buf)? < buf.len() {
+        return Err(RevError::Access(format!(
+            "could not read pointer at {addr:#x}"
+        )));
+    }
+    Ok(usize::from_le_bytes(buf))
 }
 
 // -system: dump every accessible process's main image.

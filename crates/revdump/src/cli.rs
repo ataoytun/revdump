@@ -48,6 +48,10 @@ pub struct Cli {
     #[arg(long = "minidump")]
     pub minidump: bool,
 
+    /// Detect a packed target's original entry point and dump there (requires --pid)
+    #[arg(long = "oep")]
+    pub oep: bool,
+
     /// Verbose output (repeat for more)
     #[arg(short = 'v', long = "verbose", action = ArgAction::Count)]
     pub verbose: u8,
@@ -79,6 +83,7 @@ fn remap_legacy_flag(arg: OsString) -> OsString {
         "-closemon" => "--closemon",
         "-db" => "--db",
         "-minidump" => "--minidump",
+        "-oep" => "--oep",
         _ => return arg,
     };
     match value {
@@ -114,6 +119,7 @@ pub struct DumpSpec {
     pub scope: Scope,
     pub addr: Option<u64>,
     pub closemon: bool,
+    pub oep: bool,
     pub minidump: bool,
     pub out: PathBuf,
 }
@@ -129,12 +135,20 @@ impl Cli {
             closemon,
             db,
             minidump,
+            oep,
             ..
         } = self;
 
         // -db is a standalone mode; nothing else may ride along.
         if let Some(db) = db {
-            if pid.is_some() || name.is_some() || system || addr.is_some() || closemon || minidump {
+            if pid.is_some()
+                || name.is_some()
+                || system
+                || addr.is_some()
+                || closemon
+                || minidump
+                || oep
+            {
                 return Err(RevError::Cli(
                     "-db is a standalone mode and cannot be combined with target or dump options"
                         .into(),
@@ -173,11 +187,22 @@ impl Cli {
                 "-a (immediate address dump) cannot be combined with -closemon".into(),
             ));
         }
+        if oep {
+            if !matches!(scope, Scope::Pid(_)) {
+                return Err(RevError::Cli("-oep requires -pid".into()));
+            }
+            if addr.is_some() || closemon {
+                return Err(RevError::Cli(
+                    "-oep cannot be combined with -a or -closemon".into(),
+                ));
+            }
+        }
 
         Ok(Action::Dump(DumpSpec {
             scope,
             addr,
             closemon,
+            oep,
             minidump,
             out,
         }))
@@ -237,6 +262,7 @@ mod tests {
             closemon: false,
             db: None,
             minidump: false,
+            oep: false,
             verbose: 0,
         }
     }

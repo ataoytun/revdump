@@ -3,5 +3,7 @@
 //! machine. Each is driven by the external debugger engine — orchestration lives in the crate
 //! root so the trigger code stays free of the dump pipeline.
 
+pub mod execmem;
+pub mod oep;
 pub mod sweep;
 pub mod terminate;

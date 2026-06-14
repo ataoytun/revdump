@@ -54,7 +54,12 @@ pub const OPT_DATA_DIRECTORY_OFFSET_PE32PLUS: usize = 0x70;
 pub const DATA_DIRECTORY_ENTRY_SIZE: usize = 8;
 pub const DIR_EXPORT: usize = 0;
 pub const DIR_IMPORT: usize = 1;
+pub const DIR_TLS: usize = 9;
 pub const DIR_BOUND_IMPORT: usize = 11;
+
+// IMAGE_TLS_DIRECTORY: AddressOfCallBacks is the 4th pointer-sized field (a VA to a
+// NULL-terminated array of callback VAs).
+pub const TLS_ADDRESS_OF_CALLBACKS_INDEX: usize = 3;
 
 pub const fn data_directory_offset(pe32_plus: bool, index: usize) -> usize {
     let base = if pe32_plus {

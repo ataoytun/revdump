@@ -27,6 +27,8 @@ pub fn monitor(pid: u32, mut on_exit: impl FnMut(HANDLE) -> Result<()>) -> Resul
                 break;
             }
             Stop::Exited(_) => break,
+            // Pass the target's own exceptions through to it.
+            Stop::Exception { .. } => {}
         }
     }
     // detach() restores the breakpoint byte and stops debugging, so the target runs on and exits.
