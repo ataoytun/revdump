@@ -8,8 +8,10 @@
 mod log;
 mod access;
 mod cli;
+mod discovery;
 mod error;
 mod nt;
+mod reconstruct;
 
 pub use error::{RegionOutcome, Result, RevError};
 
@@ -60,8 +62,8 @@ fn dispatch_dump(spec: cli::DumpSpec) -> Result<i32> {
         vlog!(1, "minidump export requested (pending later milestone)");
     }
     match (&spec.scope, spec.addr, spec.closemon) {
-        // M1: exercise privilege + open + PEB/memory reads end-to-end against a single PID.
-        (cli::Scope::Pid(pid), None, false) => probe_pid(*pid),
+        // Through M2 the single-PID path runs a discovery scan; reconstruction lands at M3.
+        (cli::Scope::Pid(pid), None, false) => scan_pid(*pid),
         _ => {
             let what = match &spec.scope {
                 cli::Scope::Pid(p) => format!("pid {p}"),
@@ -77,9 +79,8 @@ fn dispatch_dump(spec: cli::DumpSpec) -> Result<i32> {
     }
 }
 
-// M1 access-layer probe — also the 32->32 WOW64 verification path. Replaced by the real dump
-// pipeline from M3 on.
-fn probe_pid(pid: u32) -> Result<i32> {
+// M2: discovery scan over a single PID. The real dump pipeline replaces this summary at M3.
+fn scan_pid(pid: u32) -> Result<i32> {
     match access::privilege::enable_se_debug() {
         Ok(held) => vlog!(1, "SeDebugPrivilege held: {held}"),
         Err(err) => vlog!(1, "SeDebugPrivilege: {err}"),
@@ -87,22 +88,85 @@ fn probe_pid(pid: u32) -> Result<i32> {
 
     let proc = access::open::open_process(pid)?;
     let reader = access::reader::ProcessReader::new(&proc);
+    let report = discovery::scan_process(proc.handle(), &reader)?;
 
-    let peb_base = nt::peb_base(proc.handle())?;
-    let peb = nt::read_peb(proc.handle())?;
-    let image_base = peb.image_base_address as usize;
-
-    // Pull the PE header page through the fault-tolerant reader; a guarded page won't abort.
-    let (header, gaps) =
-        access::reader::read_best_effort(&reader, image_base, access::reader::PAGE_SIZE);
-    let mz = header.starts_with(b"MZ");
-
+    let exec_regions = report.regions.iter().filter(|r| r.is_executable()).count();
+    let suspicious: Vec<_> = report
+        .module_diffs
+        .iter()
+        .filter(|d| d.is_suspicious())
+        .collect();
     println!(
-        "pid {pid}: PEB={peb_base:#x} ImageBase={image_base:#x} \
-         BeingDebugged={} NtGlobalFlag={:#x} MZ@ImageBase={mz} unreadable_pages={}",
-        peb.being_debugged,
-        peb.nt_global_flag,
-        gaps.len()
+        "pid {pid}: regions={} (exec {exec_regions}) loader_modules={} \
+         hidden_modules={} loose_code_chunks={} modified_modules={}",
+        report.regions.len(),
+        report.loader_modules.len(),
+        report.hidden_modules.len(),
+        report.code_chunks.len(),
+        suspicious.len(),
     );
+
+    for m in &report.hidden_modules {
+        let path = m
+            .mapped_path
+            .as_deref()
+            .map(|p| format!(" [{p}]"))
+            .unwrap_or_default();
+        let bits = if m.is_pe32_plus { 64 } else { 32 };
+        println!(
+            "  hidden module @ {:#x} size {:#x} {:?} pe{bits}{path}",
+            m.base, m.size, m.kind
+        );
+    }
+    for d in &suspicious {
+        let mut flags = Vec::new();
+        if let Some(name) = &d.name_mismatch {
+            flags.push(format!("name!=mapped({name})"));
+        }
+        if d.image_base_mismatch {
+            flags.push("imagebase-mismatch".into());
+        }
+        if d.header_modified {
+            flags.push("header-modified".into());
+        }
+        if !d.hooks.is_empty() {
+            flags.push(format!(
+                "{} hooks / {} bytes",
+                d.hooks.len(),
+                d.modified_bytes
+            ));
+        }
+        println!(
+            "  modified module {} @ {:#x}: {}",
+            d.name,
+            d.base,
+            flags.join(", ")
+        );
+        for h in &d.hooks {
+            vlog!(2, "    hook @ rva {:#x} len {}", h.rva, h.len);
+        }
+    }
+    if log::verbosity() >= 1 {
+        for c in &report.code_chunks {
+            println!(
+                "  loose code @ {:#x} size {:#x} prot {:#x}",
+                c.base, c.size, c.protect
+            );
+        }
+        for module in &report.loader_modules {
+            vlog!(
+                2,
+                "  module {:#x} +{:#x} {}",
+                module.base,
+                module.size,
+                module.base_name
+            );
+        }
+        for d in &report.module_diffs {
+            if let Some(note) = &d.note {
+                vlog!(2, "  module {} @ {:#x} not diffed: {note}", d.name, d.base);
+            }
+        }
+    }
     Ok(0)
 }

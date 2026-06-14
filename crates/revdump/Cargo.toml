@@ -10,5 +10,5 @@ description = "User-mode reverse-engineering memory dumper — shared core (Scyl
 clap = { workspace = true }
 thiserror = { workspace = true }
 windows-sys = { workspace = true }
-# goblin, regex, sha2, serde, serde_json are wired in per-milestone as the layers that need
-# them land.
+goblin = { workspace = true }
+# regex, sha2, serde, serde_json are wired in per-milestone as the layers that need them land.
