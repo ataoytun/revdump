@@ -23,6 +23,15 @@ impl ArtifactKind {
             _ => "exe",
         }
     }
+
+    /// Run-dir subfolder this artifact kind lands in.
+    pub fn subdir(self) -> &'static str {
+        match self {
+            ArtifactKind::Main => "main",
+            ArtifactKind::Hidden => "modules",
+            ArtifactKind::Chunk => "chunks",
+        }
+    }
 }
 
 pub fn arch_tag() -> &'static str {

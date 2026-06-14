@@ -478,26 +478,62 @@ fn run_system_sweep(out: &std::path::Path, minidump: bool) -> Result<i32> {
     Ok(0)
 }
 
-// Lightweight per-process dump for the sweep: just the main image (with import reconstruction if
-// the directory was erased). No discovery diff or chunk scan, to keep a whole-system pass quick.
+// Lightweight per-process dump for the sweep: the main image (with import reconstruction if the
+// directory was erased) plus a manifest, into a per-pid run dir. No discovery diff or chunk scan,
+// to keep a whole-system pass quick.
 fn sweep_dump_main(pid: u32, out: &std::path::Path, minidump: bool) -> Result<()> {
     let proc = access::open::open_process(pid)?;
     let reader = access::reader::ProcessReader::new(proc.handle());
     let main_base = nt::read_peb(proc.handle())?.image_base_address as usize;
 
     let mut artifact = reconstruct::dump_module_image(&reader, main_base)?;
-    if !reconstruct::imports::has_import_directory(&artifact.bytes) {
+    let (imports, confidence) = if reconstruct::imports::has_import_directory(&artifact.bytes) {
+        ("original", "high")
+    } else {
         let modules = discovery::peb::enumerate_loader_modules(proc.handle())?;
         let catalog = reconstruct::exports::ExportCatalog::build(&reader, &modules);
-        reconstruct::imports::rebuild_imports(&mut artifact.bytes, &catalog);
-    }
+        match reconstruct::imports::rebuild_imports(&mut artifact.bytes, &catalog) {
+            Some(_) => ("reconstructed", "medium"),
+            None => ("none", "low"),
+        }
+    };
 
-    std::fs::create_dir_all(out)?;
+    let image_name = access::open::image_base_name(pid).unwrap_or_else(|| format!("pid{pid}"));
+    let layout =
+        output::layout::RunLayout::new(out, &image_name, pid, &output::layout::timestamp_local());
+    layout.create_root()?;
     let name = output::naming::filename(pid, main_base, output::naming::ArtifactKind::Main, false);
-    std::fs::write(out.join(name), &artifact.bytes)?;
+    std::fs::write(
+        layout.dir(output::naming::ArtifactKind::Main)?.join(&name),
+        &artifact.bytes,
+    )?;
+    let manifest = output::manifest::Manifest {
+        pid,
+        arch: output::naming::arch_tag().into(),
+        artifacts: vec![output::manifest::Artifact {
+            file: name,
+            kind: "main".into(),
+            base: format!("{main_base:#x}"),
+            real_base: format!("{main_base:#x}"),
+            size: artifact.bytes.len(),
+            original_protection: None,
+            hidden: false,
+            hollowed: false,
+            unreadable_pages: artifact.unreadable_pages,
+            header: "original".into(),
+            imports: imports.into(),
+            confidence: confidence.into(),
+            oep: None,
+        }],
+        notes: Vec::new(),
+    };
+    manifest.write(&layout.manifest_path())?;
     if minidump {
-        let _ =
-            output::minidump::write_minidump(proc.handle(), pid, &out.join(format!("{pid}.dmp")));
+        let _ = output::minidump::write_minidump(
+            proc.handle(),
+            pid,
+            &layout.root().join(format!("{pid}.dmp")),
+        );
     }
     Ok(())
 }
@@ -594,7 +630,10 @@ fn dump_target(
         }
     }
 
-    std::fs::create_dir_all(out)?;
+    let image_name = access::open::image_base_name(pid).unwrap_or_else(|| format!("pid{pid}"));
+    let layout =
+        output::layout::RunLayout::new(out, &image_name, pid, &output::layout::timestamp_local());
+    layout.create_root()?;
     let mut artifacts = Vec::new();
 
     let clean_db = filter::hashdb::CleanDb::load();
@@ -668,7 +707,12 @@ fn dump_target(
         output::naming::ArtifactKind::Main,
         main_hollowed,
     );
-    std::fs::write(out.join(&main_name), &main.bytes)?;
+    std::fs::write(
+        layout
+            .dir(output::naming::ArtifactKind::Main)?
+            .join(&main_name),
+        &main.bytes,
+    )?;
     artifacts.push(output::manifest::Artifact {
         file: main_name,
         kind: "main".into(),
@@ -714,8 +758,9 @@ fn dump_target(
         };
         let name =
             output::naming::filename(pid, m.base, output::naming::ArtifactKind::Hidden, false);
+        let dir = layout.dir(output::naming::ArtifactKind::Hidden)?;
         // A failed write degrades this module only: record it and move on, never abort the dump.
-        if let Err(e) = std::fs::write(out.join(&name), &bytes) {
+        if let Err(e) = std::fs::write(dir.join(&name), &bytes) {
             vlog!(1, "failed to write hidden module {name}: {e}");
             notes.push(region_note(m.base, "hidden", "failed", e.to_string()));
             continue;
@@ -756,7 +801,8 @@ fn dump_target(
         }
         let name =
             output::naming::filename(pid, c.base, output::naming::ArtifactKind::Chunk, false);
-        if let Err(e) = std::fs::write(out.join(&name), &a.bytes) {
+        let dir = layout.dir(output::naming::ArtifactKind::Chunk)?;
+        if let Err(e) = std::fs::write(dir.join(&name), &a.bytes) {
             vlog!(1, "failed to write chunk {name}: {e}");
             notes.push(region_note(c.base, "chunk", "failed", e.to_string()));
             continue;
@@ -786,15 +832,15 @@ fn dump_target(
         artifacts,
         notes,
     };
-    manifest.write(&out.join(format!("{pid}_manifest.json")))?;
+    manifest.write(&layout.manifest_path())?;
     println!(
         "wrote {} artifact(s) + manifest to {} ({skipped} skipped, {failed} failed)",
         manifest.artifacts.len(),
-        out.display()
+        layout.root().display()
     );
 
     if minidump {
-        let dmp = out.join(format!("{pid}.dmp"));
+        let dmp = layout.root().join(format!("{pid}.dmp"));
         match output::minidump::write_minidump(process, pid, &dmp) {
             Ok(()) => println!("wrote minidump -> {}", dmp.display()),
             Err(err) => eprintln!("revdump: minidump failed: {err}"),
