@@ -47,6 +47,9 @@ pub struct Artifact {
     pub imports: String,
     /// Rough confidence the artifact is analysis-ready: "high" | "medium" | "low".
     pub confidence: String,
+    /// Original entry point detected by the OEP finder (absolute VA), when dumped via `-oep`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub oep: Option<String>,
 }
 
 impl Manifest {

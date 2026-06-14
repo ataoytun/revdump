@@ -132,7 +132,7 @@ fn dispatch_dump(spec: cli::DumpSpec) -> Result<i32> {
 fn dump_pid(pid: u32, out: &std::path::Path, minidump: bool) -> Result<i32> {
     enable_se_debug();
     let proc = access::open::open_process(pid)?;
-    dump_target(proc.handle(), pid, out, minidump)
+    dump_target(proc.handle(), pid, out, minidump, None)
 }
 
 fn enable_se_debug() {
@@ -166,7 +166,7 @@ fn dump_on_breakpoint(
             }
             debug::engine::Stop::Breakpoint(hit) => {
                 println!("breakpoint hit at {hit:#x}; dumping");
-                let code = dump_target(dbg.process(), pid, out, minidump)?;
+                let code = dump_target(dbg.process(), pid, out, minidump, None)?;
                 break code;
             }
             debug::engine::Stop::Exited(code) => {
@@ -187,7 +187,7 @@ fn run_closemon(pid: u32, out: &std::path::Path, minidump: bool) -> Result<i32> 
     println!("monitoring pid {pid} for termination");
     let caught = triggers::terminate::monitor(pid, |handle| {
         println!("pid {pid} is exiting; dumping before termination");
-        dump_target(handle, pid, out, minidump).map(|_| ())
+        dump_target(handle, pid, out, minidump, None).map(|_| ())
     })?;
     if !caught {
         println!("pid {pid} exited before it could be caught");
@@ -293,7 +293,7 @@ fn oep_finder(
                 {
                     println!("OEP reached at {address:#x}; dumping");
                     dbg.protect(base, size, orig)?;
-                    dump_target(dbg.process(), pid, out, minidump)?;
+                    dump_target(dbg.process(), pid, out, minidump, Some(address))?;
                     dbg.mark_handled();
                     dumped = true;
                     break;
@@ -363,7 +363,7 @@ fn launch_to_exit(
                 }
                 if addr == terminate && !dumped {
                     println!("pid {pid} is exiting; dumping before termination");
-                    dump_target(dbg.process(), pid, out, minidump)?;
+                    dump_target(dbg.process(), pid, out, minidump, None)?;
                     dumped = true;
                 }
             }
@@ -441,7 +441,7 @@ fn run_name_regex(pattern: &str, out: &std::path::Path, minidump: bool) -> Resul
 // Open + full dump pipeline for one pid, returning () — the per-pid unit the name sweep batches.
 fn dump_target_by_pid(pid: u32, out: &std::path::Path, minidump: bool) -> Result<()> {
     let proc = access::open::open_process(pid)?;
-    dump_target(proc.handle(), pid, out, minidump).map(|_| ())
+    dump_target(proc.handle(), pid, out, minidump, None).map(|_| ())
 }
 
 // -system: dump every accessible process's main image.
@@ -500,8 +500,15 @@ fn sweep_dump_main(pid: u32, out: &std::path::Path, minidump: bool) -> Result<()
 }
 
 // Discovery + reconstruction + output against an already-open target handle (a freshly opened
-// process, or a handle from the debug-event loop).
-fn dump_target(process: HANDLE, pid: u32, out: &std::path::Path, minidump: bool) -> Result<i32> {
+// process, or a handle from the debug-event loop). `oep`, when set, is the original entry point the
+// OEP finder caught — written into the dumped main image's header.
+fn dump_target(
+    process: HANDLE,
+    pid: u32,
+    out: &std::path::Path,
+    minidump: bool,
+    oep: Option<usize>,
+) -> Result<i32> {
     let reader = access::reader::ProcessReader::new(process);
     let report = discovery::scan_process(process, &reader)?;
 
@@ -639,6 +646,19 @@ fn dump_target(process: HANDLE, pid: u32, out: &std::path::Path, minidump: bool)
         }
     };
 
+    // On the OEP path the captured header still aims AddressOfEntryPoint at the packer stub; point
+    // it at the unpacked entry so IDA/Ghidra land on real code. Single-stage: we dump at the first
+    // flip-and-execute, so multi-stage / VM-protected packers may stop at an intermediate stage.
+    if let Some(addr) = oep.filter(|a| (main_base..main_base + main.bytes.len()).contains(a)) {
+        if let Some(view) = reconstruct::pe::PeView::parse(&main.bytes) {
+            reconstruct::pe::write_u32(
+                &mut main.bytes,
+                view.opt + reconstruct::pe::OPT_ADDRESS_OF_ENTRY_POINT_OFFSET,
+                (addr - main_base) as u32,
+            );
+        }
+    }
+
     let main_name = output::naming::filename(
         pid,
         main_base,
@@ -659,6 +679,7 @@ fn dump_target(process: HANDLE, pid: u32, out: &std::path::Path, minidump: bool)
         header: "original".into(),
         imports: imports_state,
         confidence: confidence.into(),
+        oep: oep.map(|a| format!("{a:#x}")),
     });
     println!(
         "dumped main image @ {main_base:#x} ({} bytes, {} unreadable pages){}",
@@ -710,6 +731,7 @@ fn dump_target(process: HANDLE, pid: u32, out: &std::path::Path, minidump: bool)
             header: header.into(),
             imports: if synthesized { "none" } else { "original" }.into(),
             confidence: if synthesized { "low" } else { "medium" }.into(),
+            oep: None,
         });
     }
 
@@ -749,6 +771,7 @@ fn dump_target(process: HANDLE, pid: u32, out: &std::path::Path, minidump: bool)
             header: "synthesized".into(),
             imports: "none".into(),
             confidence: "low".into(),
+            oep: None,
         });
     }
 
