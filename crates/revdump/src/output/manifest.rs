@@ -11,6 +11,21 @@ pub struct Manifest {
     pub pid: u32,
     pub arch: String,
     pub artifacts: Vec<Artifact>,
+    /// Regions that were skipped (known-good / noise) or failed to write — so a degraded artifact
+    /// is machine-visible, not just a console count.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<RegionNote>,
+}
+
+#[derive(Serialize)]
+pub struct RegionNote {
+    pub base: String,
+    /// "hidden" | "chunk".
+    pub kind: String,
+    /// "skipped" | "failed".
+    pub status: String,
+    /// Why: "known-good module", "noise (no import refs)", or the I/O error.
+    pub reason: String,
 }
 
 #[derive(Serialize)]

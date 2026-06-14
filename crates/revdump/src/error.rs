@@ -1,11 +1,10 @@
-use std::path::PathBuf;
-
 use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, RevError>;
 
-/// Fatal errors — anything that aborts the current operation. Per-region failures use
-/// [`RegionOutcome`] instead so a single bad page never sinks the whole dump.
+/// Fatal errors — anything that aborts the current operation. Per-region failures are recorded as
+/// manifest notes instead (see [`crate::output::manifest`]) so a single bad page never sinks the
+/// whole dump.
 #[derive(Debug, Error)]
 pub enum RevError {
     #[error("invalid arguments: {0}")]
@@ -37,13 +36,4 @@ pub enum RevError {
 
     #[error(transparent)]
     Io(#[from] std::io::Error),
-}
-
-/// Outcome of processing one memory region. The dump loop collects these so a guarded or
-/// unreadable region degrades only itself; the manifest then reflects exactly what succeeded.
-#[derive(Debug)]
-pub enum RegionOutcome {
-    Dumped { path: PathBuf },
-    Skipped { reason: String },
-    Failed { error: String },
 }

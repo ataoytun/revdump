@@ -20,7 +20,7 @@ mod triggers;
 
 use windows_sys::Win32::Foundation::HANDLE;
 
-pub use error::{RegionOutcome, Result, RevError};
+pub use error::{Result, RevError};
 
 /// Shared entry point for both arch binaries. Returns a process exit code.
 pub fn run() -> i32 {
@@ -380,6 +380,20 @@ fn read_ptr_field(process: HANDLE, addr: usize) -> Result<usize> {
     Ok(usize::from_le_bytes(buf))
 }
 
+fn region_note(
+    base: usize,
+    kind: &str,
+    status: &str,
+    reason: String,
+) -> output::manifest::RegionNote {
+    output::manifest::RegionNote {
+        base: format!("{base:#x}"),
+        kind: kind.into(),
+        status: status.into(),
+        reason,
+    }
+}
+
 // -system: dump every accessible process's main image.
 fn run_system_sweep(out: &std::path::Path, minidump: bool) -> Result<i32> {
     enable_se_debug();
@@ -534,8 +548,9 @@ fn dump_target(process: HANDLE, pid: u32, out: &std::path::Path, minidump: bool)
     // is expensive to build, so create it lazily on first need.
     let mut catalog: Option<reconstruct::exports::ExportCatalog> = None;
     let ptr = core::mem::size_of::<usize>();
-    let mut skipped_known = 0usize;
-    let mut skipped_noise = 0usize;
+    // Per-region skips/failures recorded here and surfaced in the manifest, so a degraded artifact
+    // is machine-visible and one bad region never aborts the whole dump.
+    let mut notes: Vec<output::manifest::RegionNote> = Vec::new();
 
     // Main image — the primary unpacking target.
     let main_base = nt::read_peb(process)?.image_base_address as usize;
@@ -607,7 +622,12 @@ fn dump_target(process: HANDLE, pid: u32, out: &std::path::Path, minidump: bool)
         // Skip file-backed mappings that hash to a known-good module (e.g. resource DLLs).
         if let Some(device) = &m.mapped_path {
             if clean_db.contains_device_file(device) {
-                skipped_known += 1;
+                notes.push(region_note(
+                    m.base,
+                    "hidden",
+                    "skipped",
+                    "known-good module".into(),
+                ));
                 continue;
             }
         }
@@ -620,7 +640,12 @@ fn dump_target(process: HANDLE, pid: u32, out: &std::path::Path, minidump: bool)
         };
         let name =
             output::naming::filename(pid, m.base, output::naming::ArtifactKind::Hidden, false);
-        std::fs::write(out.join(&name), &bytes)?;
+        // A failed write degrades this module only — record it and move on, never abort the dump.
+        if let Err(e) = std::fs::write(out.join(&name), &bytes) {
+            vlog!(1, "failed to write hidden module {name}: {e}");
+            notes.push(region_note(m.base, "hidden", "failed", e.to_string()));
+            continue;
+        }
         let synthesized = header == "synthesized";
         artifacts.push(output::manifest::Artifact {
             file: name,
@@ -646,12 +671,21 @@ fn dump_target(process: HANDLE, pid: u32, out: &std::path::Path, minidump: bool)
             reconstruct::exports::ExportCatalog::build(&reader, &report.loader_modules)
         });
         if !filter::noise::is_plausible_code(&a.bytes, cat, ptr) {
-            skipped_noise += 1;
+            notes.push(region_note(
+                c.base,
+                "chunk",
+                "skipped",
+                "noise (no import refs)".into(),
+            ));
             continue;
         }
         let name =
             output::naming::filename(pid, c.base, output::naming::ArtifactKind::Chunk, false);
-        std::fs::write(out.join(&name), &a.bytes)?;
+        if let Err(e) = std::fs::write(out.join(&name), &a.bytes) {
+            vlog!(1, "failed to write chunk {name}: {e}");
+            notes.push(region_note(c.base, "chunk", "failed", e.to_string()));
+            continue;
+        }
         artifacts.push(output::manifest::Artifact {
             file: name,
             kind: "chunk".into(),
@@ -668,15 +702,17 @@ fn dump_target(process: HANDLE, pid: u32, out: &std::path::Path, minidump: bool)
         });
     }
 
+    let skipped = notes.iter().filter(|n| n.status == "skipped").count();
+    let failed = notes.iter().filter(|n| n.status == "failed").count();
     let manifest = output::manifest::Manifest {
         pid,
         arch: output::naming::arch_tag().into(),
         artifacts,
+        notes,
     };
     manifest.write(&out.join(format!("{pid}_manifest.json")))?;
     println!(
-        "wrote {} artifact(s) + manifest to {} (skipped {skipped_known} known-good, \
-         {skipped_noise} noise)",
+        "wrote {} artifact(s) + manifest to {} ({skipped} skipped, {failed} failed)",
         manifest.artifacts.len(),
         out.display()
     );
