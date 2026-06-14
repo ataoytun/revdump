@@ -180,5 +180,29 @@ fn dump_pid(pid: u32, out: &std::path::Path) -> Result<i32> {
         artifact.bytes.len(),
         artifact.unreadable_pages
     );
+
+    // Novel code the loader doesn't account for: hidden modules (real header if present, else a
+    // synthesized one) and loose chunks (always synthesized).
+    for m in &report.hidden_modules {
+        let chunk = match reconstruct::dump_module_image(&reader, m.base) {
+            Ok(a) => a,
+            Err(_) => reconstruct::dump_code_chunk(&reader, m.base, m.size),
+        };
+        let p = out.join(format!("{pid}_{:x}_hidden.bin", m.base));
+        std::fs::write(&p, &chunk.bytes)?;
+        vlog!(1, "dumped hidden module @ {:#x} -> {}", m.base, p.display());
+    }
+    for c in &report.code_chunks {
+        let chunk = reconstruct::dump_code_chunk(&reader, c.base, c.size);
+        let p = out.join(format!("{pid}_{:x}_chunk.bin", c.base));
+        std::fs::write(&p, &chunk.bytes)?;
+        vlog!(1, "dumped loose code @ {:#x} -> {}", c.base, p.display());
+    }
+    println!(
+        "dumped {} hidden module(s) and {} loose chunk(s) to {}",
+        report.hidden_modules.len(),
+        report.code_chunks.len(),
+        out.display()
+    );
     Ok(0)
 }

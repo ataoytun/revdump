@@ -35,6 +35,24 @@ pub const SEC_VIRTUAL_ADDRESS_OFFSET: usize = 0x0C;
 pub const SEC_SIZE_OF_RAW_DATA_OFFSET: usize = 0x10;
 pub const SEC_POINTER_TO_RAW_DATA_OFFSET: usize = 0x14;
 
+// Values used when synthesizing headers from scratch.
+pub const MACHINE_I386: u16 = 0x014C;
+pub const MACHINE_AMD64: u16 = 0x8664;
+pub const FILE_EXECUTABLE_IMAGE: u16 = 0x0002;
+pub const FILE_LARGE_ADDRESS_AWARE: u16 = 0x0020;
+pub const SUBSYSTEM_WINDOWS_CUI: u16 = 3;
+pub const SCN_CNT_CODE: u32 = 0x0000_0020;
+pub const SCN_MEM_EXECUTE: u32 = 0x2000_0000;
+pub const SCN_MEM_READ: u32 = 0x4000_0000;
+
+pub const fn machine_for(pe32_plus: bool) -> u16 {
+    if pe32_plus {
+        MACHINE_AMD64
+    } else {
+        MACHINE_I386
+    }
+}
+
 /// Header facts read out of an image's first page (in-memory or on-disk).
 #[derive(Debug, Clone, Copy)]
 pub struct PeHead {
