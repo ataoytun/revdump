@@ -20,9 +20,20 @@ pub const FILE_NUMBER_OF_SECTIONS_OFFSET: usize = 0x02;
 pub const OPT_MAGIC_OFFSET: usize = 0x00;
 pub const OPT_ADDRESS_OF_ENTRY_POINT_OFFSET: usize = 0x10;
 pub const OPT_SIZE_OF_IMAGE_OFFSET: usize = 0x38;
+pub const OPT_SECTION_ALIGNMENT_OFFSET: usize = 0x20;
+pub const OPT_FILE_ALIGNMENT_OFFSET: usize = 0x24;
+pub const OPT_SIZE_OF_HEADERS_OFFSET: usize = 0x3C;
 // ImageBase is a 4-byte field at 0x1C on PE32, an 8-byte field at 0x18 on PE32+.
 pub const OPT_IMAGE_BASE_OFFSET_PE32: usize = 0x1C;
 pub const OPT_IMAGE_BASE_OFFSET_PE32PLUS: usize = 0x18;
+pub const FILE_SIZE_OF_OPTIONAL_HEADER_OFFSET: usize = 0x10;
+
+// IMAGE_SECTION_HEADER: 40 bytes, field offsets from the start of each entry.
+pub const SECTION_HEADER_SIZE: usize = 40;
+pub const SEC_VIRTUAL_SIZE_OFFSET: usize = 0x08;
+pub const SEC_VIRTUAL_ADDRESS_OFFSET: usize = 0x0C;
+pub const SEC_SIZE_OF_RAW_DATA_OFFSET: usize = 0x10;
+pub const SEC_POINTER_TO_RAW_DATA_OFFSET: usize = 0x14;
 
 /// Header facts read out of an image's first page (in-memory or on-disk).
 #[derive(Debug, Clone, Copy)]
@@ -80,4 +91,63 @@ pub fn read_u64(buf: &[u8], off: usize) -> Option<u64> {
     Some(u64::from_le_bytes([
         b[0], b[1], b[2], b[3], b[4], b[5], b[6], b[7],
     ]))
+}
+
+pub fn write_u32(buf: &mut [u8], off: usize, val: u32) -> bool {
+    match buf.get_mut(off..off + 4) {
+        Some(slot) => {
+            slot.copy_from_slice(&val.to_le_bytes());
+            true
+        }
+        None => false,
+    }
+}
+
+pub fn round_up(value: u32, align: u32) -> u32 {
+    if align == 0 {
+        return value;
+    }
+    value.div_ceil(align).saturating_mul(align)
+}
+
+/// Located header positions plus the layout fields the reconstructor needs to rewrite. Richer
+/// than [`PeHead`]; grown as later milestones touch more of the header.
+#[derive(Debug, Clone, Copy)]
+pub struct PeView {
+    pub opt: usize,
+    pub number_of_sections: usize,
+    pub section_table: usize,
+    pub section_alignment: u32,
+    pub size_of_image: u32,
+}
+
+impl PeView {
+    pub fn parse(buf: &[u8]) -> Option<PeView> {
+        if buf.get(..2)? != DOS_MAGIC {
+            return None;
+        }
+        let e_lfanew = read_u32(buf, DOS_E_LFANEW_OFFSET)? as usize;
+        if buf.get(e_lfanew..e_lfanew + 4)? != PE_SIGNATURE {
+            return None;
+        }
+        let file_header = e_lfanew + 4;
+        let opt = file_header + FILE_HEADER_SIZE;
+        match read_u16(buf, opt + OPT_MAGIC_OFFSET)? {
+            OPT_MAGIC_PE32 | OPT_MAGIC_PE32PLUS => {}
+            _ => return None,
+        }
+        let size_of_optional = read_u16(buf, file_header + FILE_SIZE_OF_OPTIONAL_HEADER_OFFSET)?;
+        Some(PeView {
+            opt,
+            number_of_sections: read_u16(buf, file_header + FILE_NUMBER_OF_SECTIONS_OFFSET)?
+                as usize,
+            section_table: opt + size_of_optional as usize,
+            section_alignment: read_u32(buf, opt + OPT_SECTION_ALIGNMENT_OFFSET)?,
+            size_of_image: read_u32(buf, opt + OPT_SIZE_OF_IMAGE_OFFSET)?,
+        })
+    }
+
+    pub fn section_header(&self, index: usize) -> usize {
+        self.section_table + index * SECTION_HEADER_SIZE
+    }
 }

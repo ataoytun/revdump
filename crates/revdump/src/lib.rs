@@ -63,7 +63,7 @@ fn dispatch_dump(spec: cli::DumpSpec) -> Result<i32> {
     }
     match (&spec.scope, spec.addr, spec.closemon) {
         // Through M2 the single-PID path runs a discovery scan; reconstruction lands at M3.
-        (cli::Scope::Pid(pid), None, false) => scan_pid(*pid),
+        (cli::Scope::Pid(pid), None, false) => dump_pid(*pid, &spec.out),
         _ => {
             let what = match &spec.scope {
                 cli::Scope::Pid(p) => format!("pid {p}"),
@@ -79,8 +79,8 @@ fn dispatch_dump(spec: cli::DumpSpec) -> Result<i32> {
     }
 }
 
-// M2: discovery scan over a single PID. The real dump pipeline replaces this summary at M3.
-fn scan_pid(pid: u32) -> Result<i32> {
+// M3: discovery summary plus a memory-aligned dump of the main image to the output dir.
+fn dump_pid(pid: u32, out: &std::path::Path) -> Result<i32> {
     match access::privilege::enable_se_debug() {
         Ok(held) => vlog!(1, "SeDebugPrivilege held: {held}"),
         Err(err) => vlog!(1, "SeDebugPrivilege: {err}"),
@@ -168,5 +168,17 @@ fn scan_pid(pid: u32) -> Result<i32> {
             }
         }
     }
+
+    std::fs::create_dir_all(out)?;
+    let main_base = nt::read_peb(proc.handle())?.image_base_address as usize;
+    let artifact = reconstruct::dump_module_image(&reader, main_base)?;
+    let path = out.join(format!("{pid}_{:x}_main.exe", artifact.base));
+    std::fs::write(&path, &artifact.bytes)?;
+    println!(
+        "dumped main image @ {main_base:#x} -> {} ({} bytes, {} unreadable pages)",
+        path.display(),
+        artifact.bytes.len(),
+        artifact.unreadable_pages
+    );
     Ok(0)
 }
