@@ -15,6 +15,7 @@ mod filter;
 mod nt;
 mod output;
 mod reconstruct;
+mod triggers;
 
 use windows_sys::Win32::Foundation::HANDLE;
 
@@ -98,6 +99,10 @@ fn dispatch_dump(spec: cli::DumpSpec) -> Result<i32> {
         (cli::Scope::Pid(pid), Some(addr), false) => {
             dump_on_breakpoint(*pid, addr as usize, &spec.out, spec.minidump)
         }
+        // -closemon -pid X: dump X just before it exits.
+        (cli::Scope::Pid(pid), None, true) => run_closemon(*pid, &spec.out, spec.minidump),
+        // -system: dump every accessible process's main image.
+        (cli::Scope::System, None, false) => run_system_sweep(&spec.out, spec.minidump),
         _ => {
             let what = match &spec.scope {
                 cli::Scope::Pid(p) => format!("pid {p}"),
@@ -153,6 +158,69 @@ fn dump_on_breakpoint(pid: u32, addr: usize, out: &std::path::Path, minidump: bo
     };
     dbg.detach()?;
     Ok(exit_code)
+}
+
+// -closemon: catch a process just before it exits and dump it.
+fn run_closemon(pid: u32, out: &std::path::Path, minidump: bool) -> Result<i32> {
+    enable_se_debug();
+    println!("monitoring pid {pid} for termination");
+    let caught = triggers::terminate::monitor(pid, |handle| {
+        println!("pid {pid} is exiting; dumping before termination");
+        dump_target(handle, pid, out, minidump).map(|_| ())
+    })?;
+    if !caught {
+        println!("pid {pid} exited before it could be caught");
+    }
+    Ok(if caught { 0 } else { 1 })
+}
+
+// -system: dump every accessible process's main image.
+fn run_system_sweep(out: &std::path::Path, minidump: bool) -> Result<i32> {
+    enable_se_debug();
+    let me = std::process::id();
+    let mut dumped = 0u32;
+    let mut skipped = 0u32;
+    for pid in triggers::sweep::enumerate_pids() {
+        if pid == me {
+            continue;
+        }
+        match sweep_dump_main(pid, out, minidump) {
+            Ok(()) => {
+                dumped += 1;
+                vlog!(1, "dumped pid {pid}");
+            }
+            Err(err) => {
+                skipped += 1;
+                vlog!(2, "skipped pid {pid}: {err}");
+            }
+        }
+    }
+    println!("system sweep: dumped {dumped}, skipped {skipped}");
+    Ok(0)
+}
+
+// Lightweight per-process dump for the sweep: just the main image (with import reconstruction if
+// the directory was erased) — no discovery diff or chunk scan, to keep a whole-system pass quick.
+fn sweep_dump_main(pid: u32, out: &std::path::Path, minidump: bool) -> Result<()> {
+    let proc = access::open::open_process(pid)?;
+    let reader = access::reader::ProcessReader::new(proc.handle());
+    let main_base = nt::read_peb(proc.handle())?.image_base_address as usize;
+
+    let mut artifact = reconstruct::dump_module_image(&reader, main_base)?;
+    if !reconstruct::imports::has_import_directory(&artifact.bytes) {
+        let modules = discovery::peb::enumerate_loader_modules(proc.handle())?;
+        let catalog = reconstruct::exports::ExportCatalog::build(&reader, &modules);
+        reconstruct::imports::rebuild_imports(&mut artifact.bytes, &catalog);
+    }
+
+    std::fs::create_dir_all(out)?;
+    let name = output::naming::filename(pid, main_base, output::naming::ArtifactKind::Main, false);
+    std::fs::write(out.join(name), &artifact.bytes)?;
+    if minidump {
+        let _ =
+            output::minidump::write_minidump(proc.handle(), pid, &out.join(format!("{pid}.dmp")));
+    }
+    Ok(())
 }
 
 // Discovery + reconstruction + output against an already-open target handle (a freshly opened
