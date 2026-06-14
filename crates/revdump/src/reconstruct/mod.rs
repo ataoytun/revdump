@@ -1,5 +1,5 @@
-//! Layer 3 — reconstruction. Turns captured process memory into IDA/Ghidra-loadable PE files:
-//! section de-virtualization now, header synthesis and import rebuild in following commits.
+//! Reconstruction layer: turn captured process memory into IDA/Ghidra-loadable PE files via
+//! section de-virtualization, header repair/synthesis, and import-table rebuild.
 
 pub mod devirt;
 pub mod exports;

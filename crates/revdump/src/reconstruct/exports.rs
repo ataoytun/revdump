@@ -12,7 +12,7 @@ pub struct ExportRef {
     pub ordinal: u16,
 }
 
-/// Maps an absolute export address to the (module, name/ordinal) it belongs to — the lookup that
+/// Maps an absolute export address to the (module, name/ordinal) it belongs to: the lookup that
 /// turns a bound IAT pointer back into an import.
 pub struct ExportCatalog {
     by_va: HashMap<u64, ExportRef>,

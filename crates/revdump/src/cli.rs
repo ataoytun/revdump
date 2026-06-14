@@ -188,7 +188,7 @@ impl Cli {
 
         // -closemon is a modifier on a single PID, not a scope. System-wide termination monitoring
         // would need a kernel callback or injection (both out of scope), so reject every non-pid
-        // form here — including bare -closemon — with its own message rather than the generic one.
+        // form here (including bare -closemon) with its own message rather than the generic one.
         if closemon && pid.is_none() {
             return Err(RevError::Cli(
                 "-closemon requires -pid (dump a specific process just before it exits); \

@@ -28,9 +28,9 @@ const BREAKPOINT_BYTE: u8 = 0xCC;
 /// What [`Debugger::cont`] stopped on. Uninteresting events (DLL loads, thread create/exit, other
 /// exceptions) are handled internally and never surface here.
 pub enum Stop {
-    /// The system's initial breakpoint — fired after the loader mapped the image + dependencies
-    /// but before TLS callbacks / the entry point. The place to arm breakpoints and, at M7, apply
-    /// anti-debug patches.
+    /// The system's initial breakpoint: fires after the loader mapped the image and dependencies
+    /// but before TLS callbacks / the entry point. Where we arm breakpoints and apply anti-debug
+    /// patches.
     InitialBreak,
     Breakpoint(usize),
     /// A non-breakpoint exception (access violation, guard violation, ...). Surfaced so the OEP
@@ -43,7 +43,7 @@ pub enum Stop {
     Exited(u32),
 }
 
-/// External Win32 debugger. No code is injected into the target — control is entirely through the
+/// External Win32 debugger. No code is injected into the target; control is entirely through the
 /// debug event loop plus software breakpoints (0xCC) and memory writes.
 pub struct Debugger {
     pid: u32,
@@ -76,9 +76,9 @@ impl Debugger {
     }
 
     /// Attach to a running process. Its initial breakpoint (injected on attach) fires *after*
-    /// startup — so TLS callbacks and the entry point have already run.
+    /// startup, so TLS callbacks and the entry point have already run.
     pub fn attach(pid: u32) -> Result<Debugger> {
-        // SAFETY: documented debug API; a zero return means failure.
+        // SAFETY: DebugActiveProcess takes pid by value and returns zero on failure, checked here.
         if unsafe { DebugActiveProcess(pid) } == 0 {
             return Err(RevError::Access(format!(
                 "DebugActiveProcess({pid}) failed"
@@ -88,8 +88,8 @@ impl Debugger {
     }
 
     /// Launch a process under the debugger. Its initial breakpoint fires after the loader maps the
-    /// image+dependencies but *before* TLS callbacks / the entry point — the point at which
-    /// anti-debug patches must land.
+    /// image and dependencies but *before* TLS callbacks / the entry point: where anti-debug
+    /// patches must land.
     pub fn launch(command: &str) -> Result<Debugger> {
         let mut cmdline: Vec<u16> = command.encode_utf16().chain(core::iter::once(0)).collect();
         // SAFETY: zero-initialized startup info with cb set; CreateProcessW needs a writable
@@ -131,7 +131,7 @@ impl Debugger {
         self.pid
     }
 
-    /// Thread id of the most recent stop — needed to read/modify its registers.
+    /// Thread id of the most recent stop, needed to read/modify its registers.
     pub fn current_thread(&self) -> u32 {
         self.last_thread
     }

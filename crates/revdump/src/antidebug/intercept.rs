@@ -20,7 +20,7 @@ const INVALID_INFO_CLASS: usize = 0xFFFF_FFFF;
 const PTR: usize = core::mem::size_of::<usize>();
 
 /// Rewrites the results of the NTAPI calls packers use to detect a debugger, so a debugged target
-/// sees the values it would see running normally. Driven entirely by breakpoints — no injection.
+/// sees the values it would see running normally. Driven entirely by breakpoints, no injection.
 pub struct Interceptor {
     query_info: usize,
     set_thread: usize,

@@ -1,6 +1,6 @@
-//! Layer 2 — discovery: walk the address space, enumerate loader modules straight from the PEB,
-//! and surface code the loader doesn't account for (manually-mapped modules, loose chunks). The
-//! in-memory-vs-on-disk diff lands in M2b.
+//! Discovery layer: walk the address space, enumerate loader modules straight from the PEB, and
+//! surface code the loader doesn't account for (manually-mapped modules, loose chunks). Diffing
+//! each module's in-memory image against its on-disk file flags inline hooks and hollowing.
 
 pub mod diff;
 pub mod peb;

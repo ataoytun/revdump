@@ -8,7 +8,7 @@ const MIN_IMPORT_REFS: usize = 2;
 /// Heuristic guard against false-positive code chunks: a region is "plausible code" if at least a
 /// couple of pointer-sized, pointer-aligned values resolve to real exports. Pure data and
 /// zero-filled pages almost never do. (Catches absolute IAT-style references; code that reaches
-/// imports only via RIP-relative thunks won't trip it — a deliberately conservative knob.)
+/// imports only via RIP-relative thunks won't trip it, a deliberately conservative knob.)
 pub fn is_plausible_code(bytes: &[u8], catalog: &ExportCatalog, ptr: usize) -> bool {
     let mut refs = 0;
     let mut off = 0;

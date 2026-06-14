@@ -4,9 +4,9 @@ use crate::reconstruct::pe::{self, PeView};
 /// Rewrite the section table so the on-disk layout mirrors memory (RVA == file offset).
 ///
 /// This is the default dump mode: FileAlignment becomes SectionAlignment and each section's raw
-/// pointer/size become its virtual address/size, so the dumped file is byte-for-byte the
-/// in-memory image and IDA/Ghidra map it without re-shuffling raw vs. virtual slack — the layout
-/// a packer already produced in memory is exactly what we want to analyze.
+/// pointer/size become its virtual address/size, so the file is byte-for-byte the in-memory image
+/// and IDA/Ghidra map it without reshuffling raw against virtual slack. The packer's in-memory
+/// layout is what we analyze, not the original on-disk one.
 pub fn memory_align(image: &mut [u8]) -> Result<()> {
     let view = PeView::parse(image)
         .ok_or_else(|| RevError::Reconstruct("image has no usable PE header".into()))?;

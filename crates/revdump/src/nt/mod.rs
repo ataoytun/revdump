@@ -56,7 +56,7 @@ pub fn read_memory(process: HANDLE, addr: usize, buf: &mut [u8]) -> Result<usize
 /// Read a plain-old-data `T` out of the target.
 ///
 /// # Safety
-/// `T` must be valid for any bit pattern (no padding invariants, no references) — it is filled
+/// `T` must be valid for any bit pattern (no padding invariants, no references). It is filled
 /// from raw target bytes. The NT structs in [`ffi`] satisfy this.
 pub unsafe fn read_pod<T: Copy>(process: HANDLE, addr: usize) -> Result<T> {
     let mut value = MaybeUninit::<T>::uninit();
@@ -183,7 +183,7 @@ fn arch_mismatch_reason(
         // revdump32 on a 64-bit OS: a non-WOW64 target is native 64-bit.
         (!target_wow64).then_some("target is 64-bit; use revdump64")
     } else {
-        // 32-bit OS: every process is 32-bit — nothing to refuse.
+        // 32-bit OS: every process is 32-bit. Nothing to refuse.
         None
     }
 }

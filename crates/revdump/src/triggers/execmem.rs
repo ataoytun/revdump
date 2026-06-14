@@ -1,6 +1,6 @@
 use std::collections::HashSet;
 
-/// A region whose execute permission we stripped (DEP-flip) so its first execution faults — the
+/// A region whose execute permission we stripped (DEP-flip) so its first execution faults. The
 /// fault address is the OEP.
 pub struct WatchedRegion {
     pub base: usize,

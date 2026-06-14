@@ -30,7 +30,7 @@ impl Drop for OwnedProcess {
 /// print a clean "protected" message instead of a bare access error.
 pub fn open_process(pid: u32) -> Result<OwnedProcess> {
     let desired = PROCESS_QUERY_INFORMATION | PROCESS_VM_READ;
-    // SAFETY: plain Win32 call; a null return signals failure.
+    // SAFETY: OpenProcess takes no buffers we own; it returns a handle or null, checked below.
     let handle = unsafe { OpenProcess(desired, 0, pid) };
     if !handle.is_null() {
         let proc = OwnedProcess { handle };
@@ -54,7 +54,7 @@ pub fn open_process(pid: u32) -> Result<OwnedProcess> {
 // PROCESS_QUERY_LIMITED_INFORMATION is grantable on many targets that deny the heavier rights,
 // which is enough to read PS_PROTECTION and tell PPL apart from a plain access denial.
 fn probe_protection(pid: u32) -> Option<String> {
-    // SAFETY: plain Win32 call; null signals failure.
+    // SAFETY: OpenProcess for the protection probe; null means even the limited query was denied.
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if handle.is_null() {
         return None;
@@ -67,10 +67,10 @@ fn probe_protection(pid: u32) -> Option<String> {
 }
 
 /// The leaf image name of `pid` (e.g. "notepad.exe"), for the `-p` name-regex scope. Uses
-/// PROCESS_QUERY_LIMITED_INFORMATION, grantable on most targets that deny the heavier read rights —
-/// so the match set isn't silently narrowed to processes we could already fully open.
+/// PROCESS_QUERY_LIMITED_INFORMATION, grantable on most targets that deny the heavier read rights,
+/// so the match set isn't limited to processes we could already fully open.
 pub fn image_base_name(pid: u32) -> Option<String> {
-    // SAFETY: plain Win32 call; null signals failure.
+    // SAFETY: OpenProcess for the name query; null means the pid is gone or access-denied.
     let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid) };
     if handle.is_null() {
         return None;

@@ -7,7 +7,7 @@ const MAX_CALLBACKS: usize = 256;
 
 /// Read the static TLS callback addresses from the target's main image. Packers commonly run
 /// unpack stubs through TLS callbacks *before* the entry point, so these must be tracked (and can
-/// be breakpointed) — otherwise a pre-EP callback executing freshly-written memory could be
+/// be breakpointed). Otherwise a pre-EP callback executing freshly-written memory could be
 /// mistaken for the OEP.
 pub fn callbacks(process: HANDLE, image_base: usize) -> Vec<usize> {
     let mut header = [0u8; 0x1000];

@@ -25,7 +25,7 @@ extern "system" {
 
 const MINIDUMP_WITH_FULL_MEMORY: u32 = 0x0000_0002;
 
-/// Write a full-memory minidump (.dmp) of the target — the classic crash-dump format, kept
+/// Write a full-memory minidump (.dmp) of the target: the classic crash-dump format, kept
 /// separate from the RE-oriented PE dumps. The target must be open with VM_READ +
 /// QUERY_INFORMATION, which is what `open_process` grants.
 pub fn write_minidump(process: HANDLE, pid: u32, path: &Path) -> Result<()> {

@@ -2,8 +2,8 @@ use thiserror::Error;
 
 pub type Result<T> = std::result::Result<T, RevError>;
 
-/// Fatal errors — anything that aborts the current operation. Per-region failures are recorded as
-/// manifest notes instead (see [`crate::output::manifest`]) so a single bad page never sinks the
+/// Fatal errors: anything that aborts the current operation. Per-region failures are recorded as
+/// manifest notes instead (see [`crate::output::manifest`]), so a single bad page never sinks the
 /// whole dump.
 #[derive(Debug, Error)]
 pub enum RevError {

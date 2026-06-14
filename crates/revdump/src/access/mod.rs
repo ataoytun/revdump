@@ -1,5 +1,5 @@
-//! Layer 1 — access: privilege acquisition, opening targets (with protection detection), and
-//! fault-tolerant memory reads.
+//! Access layer: acquire SeDebugPrivilege, open the target (detecting protected processes), and
+//! read its memory without aborting on a guarded page.
 
 pub mod open;
 pub mod privilege;

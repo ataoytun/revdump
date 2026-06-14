@@ -10,7 +10,7 @@ pub fn verbosity() -> u8 {
     VERBOSITY.load(Ordering::Relaxed)
 }
 
-/// `vlog!(level, fmt, ...)` — emit to stderr only when `-v` was given at least `level` times.
+/// `vlog!(level, fmt, ...)`: emit to stderr only when `-v` was given at least `level` times.
 macro_rules! vlog {
     ($level:expr, $($arg:tt)*) => {{
         if $crate::log::verbosity() >= $level {

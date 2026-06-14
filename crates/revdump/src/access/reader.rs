@@ -9,7 +9,7 @@ pub trait MemoryReader {
     fn read(&self, addr: usize, buf: &mut [u8]) -> Result<usize>;
 }
 
-/// Reads target memory through a process handle. The caller owns the handle's lifetime — both a
+/// Reads target memory through a process handle. The caller owns the handle's lifetime: both a
 /// freshly-opened [`OwnedProcess`](crate::access::open::OwnedProcess) handle and a debug-event
 /// handle outlive the reads done with them.
 pub struct ProcessReader {

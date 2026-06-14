@@ -27,9 +27,9 @@ const PTR: usize = core::mem::size_of::<usize>();
 /// breakpoint, which precedes the first TLS callback / the entry point only under --launch; on
 /// attach it fires post-startup, so a pre-EP check may already have run.
 pub fn neutralize(process: HANDLE, peb_base: usize) -> Result<()> {
-    // BeingDebugged = 0 — what IsDebuggerPresent() returns.
+    // BeingDebugged = 0: what IsDebuggerPresent() returns.
     nt::write_memory(process, peb_base + offset_of!(Peb, being_debugged), &[0u8])?;
-    // NtGlobalFlag = 0 — the FLG_HEAP_* debug bits a debugged process carries.
+    // NtGlobalFlag = 0: the FLG_HEAP_* debug bits a debugged process carries.
     nt::write_memory(
         process,
         peb_base + offset_of!(Peb, nt_global_flag),
@@ -37,7 +37,7 @@ pub fn neutralize(process: HANDLE, peb_base: usize) -> Result<()> {
     )?;
 
     // Heap Flags/ForceFlags: a debugged process gets extra validation bits set; reset to the clean
-    // values. Best-effort — the heap struct offsets are version-dependent.
+    // values. Best-effort: the heap struct offsets are version-dependent.
     if let Ok(heap) = read_ptr(process, peb_base + PROCESS_HEAP_OFFSET) {
         if heap != 0 {
             let _ = nt::write_memory(

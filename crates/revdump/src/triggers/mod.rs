@@ -1,7 +1,7 @@
-//! Layer 4 — triggers: decide *when* to dump. Terminate-monitor and the full-system sweep here;
-//! TLS-callback / new-executable-allocation / OEP triggers build on the shared execmem state
-//! machine. Each is driven by the external debugger engine — orchestration lives in the crate
-//! root so the trigger code stays free of the dump pipeline.
+//! Triggers layer: decide *when* to dump. Terminate-monitor and the full-system sweep live here;
+//! the TLS-callback, new-executable-allocation, and OEP triggers build on the shared execmem state
+//! machine. Each is driven by the external debugger engine, with orchestration in the crate root
+//! so the trigger code stays free of the dump pipeline.
 
 pub mod execmem;
 pub mod oep;

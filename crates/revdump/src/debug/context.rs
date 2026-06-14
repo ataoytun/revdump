@@ -20,7 +20,7 @@ const CONTEXT_INTEGER: u32 = 0x0010_0002;
 struct AlignedContext(CONTEXT);
 
 fn open(tid: u32) -> Result<HANDLE> {
-    // SAFETY: plain Win32 call; a null return signals failure.
+    // SAFETY: OpenThread returns a thread handle or null for the tid; null is checked below.
     let thread = unsafe { OpenThread(THREAD_GET_CONTEXT | THREAD_SET_CONTEXT, 0, tid) };
     if thread.is_null() {
         return Err(RevError::Access(format!("OpenThread({tid}) failed")));
@@ -75,7 +75,7 @@ pub fn set_instruction_pointer(tid: u32, ip: usize) -> Result<()> {
     result
 }
 
-/// Toggle the trap (single-step) flag so the next instruction raises STATUS_SINGLE_STEP — used to
+/// Toggle the trap (single-step) flag so the next instruction raises STATUS_SINGLE_STEP. Used to
 /// step over a persistent breakpoint before re-arming it.
 pub fn set_trap_flag(tid: u32, enabled: bool) -> Result<()> {
     const TRAP_FLAG: u32 = 0x100; // EFLAGS.TF
@@ -129,7 +129,7 @@ pub fn set_call_arg(tid: u32, index: usize, value: usize) -> Result<()> {
     result
 }
 
-/// Read the stack pointer (x64: RSP) — used to fetch a callee's return address from [RSP].
+/// Read the stack pointer (x64: RSP), used to fetch a callee's return address from [RSP].
 #[cfg(target_arch = "x86_64")]
 pub fn read_stack_pointer(tid: u32) -> Result<usize> {
     let thread = open(tid)?;
@@ -138,7 +138,7 @@ pub fn read_stack_pointer(tid: u32) -> Result<usize> {
     result
 }
 
-/// Overwrite the return value register (x64: RAX) — used to spoof an NTSTATUS at a syscall return.
+/// Overwrite the return value register (x64: RAX), used to spoof an NTSTATUS at a syscall return.
 #[cfg(target_arch = "x86_64")]
 pub fn set_return_value(tid: u32, value: usize) -> Result<()> {
     let thread = open(tid)?;

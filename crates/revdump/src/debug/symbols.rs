@@ -2,7 +2,7 @@ use windows_sys::Win32::System::LibraryLoader::{GetModuleHandleW, GetProcAddress
 
 /// Resolve an ntdll export to its absolute address. ntdll is mapped at the same base in every
 /// process this boot (it's a known-DLL), so an address resolved in our own process is valid in
-/// the target — which lets us breakpoint ntdll functions without reading the target's exports.
+/// the target, and we can breakpoint ntdll functions without reading the target's exports.
 pub fn ntdll_export(name: &str) -> Option<usize> {
     let module_name: Vec<u16> = "ntdll.dll"
         .encode_utf16()

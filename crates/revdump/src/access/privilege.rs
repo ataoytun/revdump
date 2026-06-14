@@ -10,7 +10,7 @@ use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken}
 use crate::error::{Result, RevError};
 
 /// Enable SeDebugPrivilege on our own token. Returns whether the privilege is actually held
-/// (a non-elevated process can ask successfully but still be denied it — that is not fatal, it
+/// (a non-elevated process can ask successfully but still be denied it; that's not fatal, it
 /// just means some targets won't open).
 pub fn enable_se_debug() -> Result<bool> {
     // SAFETY: token handle is opened and closed locally; the privilege block is fully initialized

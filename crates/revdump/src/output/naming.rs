@@ -1,4 +1,4 @@
-//! Parseable artifact filenames: `pid_base_arch_kind[_hollow].ext` — stable fields a pipeline can
+//! Parseable artifact filenames `pid_base_arch_kind[_hollow].ext`: stable fields a pipeline can
 //! split on without guessing.
 
 #[derive(Clone, Copy)]

@@ -10,11 +10,11 @@ use windows_sys::Win32::System::ProcessStatus::GetMappedFileNameW;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RegionKind {
-    /// MEM_IMAGE — backed by a mapped image (SEC_IMAGE) section.
+    /// MEM_IMAGE: backed by a mapped image (SEC_IMAGE) section.
     Image,
-    /// MEM_MAPPED — backed by a data file/section.
+    /// MEM_MAPPED: backed by a data file/section.
     Mapped,
-    /// MEM_PRIVATE — heap/VirtualAlloc memory; where reflective loads and shellcode live.
+    /// MEM_PRIVATE: heap/VirtualAlloc memory; where reflective loads and shellcode live.
     Private,
 }
 

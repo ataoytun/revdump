@@ -56,7 +56,7 @@ pub fn synthesize_pe(base: usize, code: &[u8]) -> Vec<u8> {
     w.u32(raw); // SizeOfCode
     w.u32(0); // SizeOfInitializedData
     w.u32(0); // SizeOfUninitializedData
-    w.u32(HEADER_PAGE); // AddressOfEntryPoint (start of code; refined by OEP detection later)
+    w.u32(HEADER_PAGE); // AddressOfEntryPoint (start of code)
     w.u32(HEADER_PAGE); // BaseOfCode
     #[cfg(target_pointer_width = "32")]
     {

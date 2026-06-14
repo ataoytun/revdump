@@ -5,7 +5,7 @@ use crate::discovery::peb::LoaderModule;
 use crate::discovery::walk::{Region, RegionKind};
 use crate::reconstruct::pe;
 
-/// A PE image present in memory whose base isn't a loader module — manually-mapped / reflectively
+/// A PE image present in memory whose base isn't a loader module: manually-mapped / reflectively
 /// loaded code the loader has no record of.
 #[derive(Debug, Clone)]
 pub struct HiddenModule {
@@ -16,7 +16,7 @@ pub struct HiddenModule {
     pub mapped_path: Option<String>,
 }
 
-/// Executable private memory with no PE header — loose code (shellcode, JIT, unpacked stubs).
+/// Executable private memory with no PE header: loose code (shellcode, JIT, unpacked stubs).
 #[derive(Debug, Clone)]
 pub struct CodeChunk {
     pub base: usize,

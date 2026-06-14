@@ -106,7 +106,7 @@ impl PsProtection {
 // ProcessInformationClass values we touch.
 pub const PROCESS_BASIC_INFORMATION_CLASS: i32 = 0;
 // ProcessWow64Information: yields the target's PEB32 address (nonzero) for a 32-bit WOW64 process,
-// 0 for a native process — how we tell a target's bitness apart from our own.
+// 0 for a native process. That's how we tell a target's bitness from our own.
 pub const PROCESS_WOW64_INFORMATION: i32 = 26;
 pub const PROCESS_PROTECTION_INFORMATION: i32 = 61;
 

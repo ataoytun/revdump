@@ -9,9 +9,9 @@ use crate::error::Result;
 
 type Hash = [u8; 32];
 
-/// Content-hash database of known-good modules. Hashing the on-disk file (not the in-memory image)
-/// means a packed or hooked module in memory naturally fails to match its clean hash — exactly the
-/// novel code we want to keep dumping.
+/// Content-hash database of known-good modules. Because it hashes the on-disk file, not the
+/// in-memory image, a packed or hooked module won't match and stays in the dump set; clean system
+/// modules match and are filtered out.
 pub struct CleanDb {
     path: PathBuf,
     hashes: HashSet<Hash>,
@@ -78,7 +78,7 @@ impl CleanDb {
         before - self.hashes.len()
     }
 
-    /// Seed from the system module directories — the bulk of what loads into every process.
+    /// Seed from the system module directories, the bulk of what loads into every process.
     pub fn generate(&mut self) -> usize {
         let windir = std::env::var_os("WINDIR")
             .map(PathBuf::from)

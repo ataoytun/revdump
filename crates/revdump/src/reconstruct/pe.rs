@@ -1,6 +1,5 @@
-//! PE format constants and small header readers — the single source of truth for offsets/flags
-//! shared across discovery and reconstruction. Grown per-milestone; nothing here duplicates an
-//! offset defined elsewhere.
+//! PE format constants and small header readers: the single source of truth for offsets and flags
+//! shared across discovery and reconstruction. Nothing here duplicates an offset defined elsewhere.
 
 pub const DOS_MAGIC: [u8; 2] = *b"MZ";
 pub const PE_SIGNATURE: [u8; 4] = *b"PE\0\0";
@@ -173,8 +172,8 @@ pub fn round_up(value: u32, align: u32) -> u32 {
     value.div_ceil(align).saturating_mul(align)
 }
 
-/// Located header positions plus the layout fields the reconstructor needs to rewrite. Richer
-/// than [`PeHead`]; grown as later milestones touch more of the header.
+/// Located header positions plus the layout fields the reconstructor needs to rewrite. Carries
+/// more of the header than [`PeHead`], which only identifies an image.
 #[derive(Debug, Clone, Copy)]
 pub struct PeView {
     pub opt: usize,

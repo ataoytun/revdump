@@ -37,7 +37,7 @@ impl ModuleDiff {
         self.is_hollowed() || !self.hooks.is_empty()
     }
 
-    /// Hollowing-specific signals only (header/name/base replacement) — deliberately excludes
+    /// Hollowing-specific signals only (header/name/base replacement). Deliberately excludes
     /// inline hooks, which on modern Windows are dominated by benign loader import-optimization.
     pub fn is_hollowed(&self) -> bool {
         self.name_mismatch.is_some() || self.image_base_mismatch || self.header_modified
@@ -101,7 +101,7 @@ fn diff_module<R: MemoryReader>(
     if let (Some(mem), Some(disk)) = (pe::parse_head(&mem_header), pe::parse_head(&file)) {
         // The loader rewrites the in-memory ImageBase to the actual load base, so a value that
         // ISN'T the load base means the header was planted by something other than the loader
-        // (hollowing). EP and section count the loader does not touch — those diffs are genuine.
+        // (hollowing). EP and section count the loader does not touch, so those diffs are genuine.
         diff.image_base_mismatch = mem.image_base != module.base as u64;
         diff.header_modified = mem.entry_point != disk.entry_point
             || mem.number_of_sections != disk.number_of_sections;
@@ -133,7 +133,7 @@ fn diff_module<R: MemoryReader>(
     // KNOWN LIMITATION: Windows 10+ applies "import optimization" and CFG patches to .text at
     // load time, so even a clean process shows small diffs here. They surface alongside genuine
     // inline hooks; telling them apart (e.g. a diff that rewrites an indirect import call into a
-    // direct one) is left to downstream filtering (clean-hash DB, M5).
+    // direct one) is left to downstream filtering (the clean-hash DB).
     for section in &pe.sections {
         if section.characteristics & IMAGE_SCN_MEM_EXECUTE == 0 {
             continue;

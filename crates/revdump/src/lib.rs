@@ -1,10 +1,10 @@
-//! revdump — user-mode reverse-engineering memory dumper (shared core).
+//! revdump: user-mode reverse-engineering memory dumper (shared core).
 //!
 //! Two binaries build from this crate: `revdump32` (i686) and `revdump64` (x86_64), each
 //! dumping its own architecture natively to sidestep WOW64 cross-bitness. All logic lives here;
 //! the binaries are thin arch-locked shims.
 
-// Production code never panics on a Result/Option — unwrap/expect stay confined to tests.
+// Production code never panics on a Result/Option; unwrap/expect stay confined to tests.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 #[macro_use]
@@ -49,8 +49,7 @@ fn try_run() -> Result<i32> {
 }
 
 fn dispatch(action: cli::Action) -> Result<i32> {
-    // M0: the argument surface and validation are wired; per-layer dispatch lands in later
-    // milestones. Each arm reports the resolved request honestly rather than pretending to run.
+    // Route a validated CLI action to the layer that handles it.
     match action {
         cli::Action::ManageDb(db) => manage_db(db),
         cli::Action::Dump(spec) => dispatch_dump(spec),
@@ -220,9 +219,9 @@ fn arm_anti_debug(
     }
 }
 
-// -oep: attach, watch the packer make memory executable, strip execute so its jump to the
-// unpacked code faults, and dump at that fault — the original entry point. x64-only for now:
-// reading the VirtualProtect arguments uses the x64 register convention (the x86 reads error out).
+// -oep: attach, watch the packer make memory executable, strip execute so its jump into the
+// unpacked code faults, and dump at that fault (the original entry point). x64 only: reading the
+// VirtualProtect arguments uses the x64 register convention, and the x86 reads return an error.
 fn run_oep_finder(pid: u32, hide: bool, out: &std::path::Path, minidump: bool) -> Result<i32> {
     enable_se_debug();
     let dbg = debug::engine::Debugger::attach(pid)?;
@@ -442,7 +441,7 @@ fn run_name_regex(pattern: &str, out: &std::path::Path, minidump: bool) -> Resul
     Ok(0)
 }
 
-// Open + full dump pipeline for one pid, returning () — the per-pid unit the name sweep batches.
+// Open + full dump pipeline for one pid, returning (): the per-pid unit the name sweep batches.
 fn dump_target_by_pid(pid: u32, out: &std::path::Path, minidump: bool) -> Result<()> {
     let proc = access::open::open_process(pid)?;
     dump_target(proc.handle(), pid, out, minidump, None).map(|_| ())
@@ -463,8 +462,8 @@ fn run_system_sweep(out: &std::path::Path, minidump: bool) -> Result<i32> {
                 dumped += 1;
                 vlog!(1, "dumped pid {pid}");
             }
-            // A cross-bitness target isn't ours to dump — skip it cleanly rather than emit the
-            // import-less, mis-classified output a foreign-PEB read would produce.
+            // A cross-bitness target isn't ours to dump. Skip it rather than emit the import-less,
+            // mis-classified output a foreign-PEB read would produce.
             Err(RevError::ArchMismatch(_)) => {
                 skipped += 1;
                 vlog!(1, "pid {pid}: wrong arch");
@@ -480,7 +479,7 @@ fn run_system_sweep(out: &std::path::Path, minidump: bool) -> Result<i32> {
 }
 
 // Lightweight per-process dump for the sweep: just the main image (with import reconstruction if
-// the directory was erased) — no discovery diff or chunk scan, to keep a whole-system pass quick.
+// the directory was erased). No discovery diff or chunk scan, to keep a whole-system pass quick.
 fn sweep_dump_main(pid: u32, out: &std::path::Path, minidump: bool) -> Result<()> {
     let proc = access::open::open_process(pid)?;
     let reader = access::reader::ProcessReader::new(proc.handle());
@@ -505,7 +504,7 @@ fn sweep_dump_main(pid: u32, out: &std::path::Path, minidump: bool) -> Result<()
 
 // Discovery + reconstruction + output against an already-open target handle (a freshly opened
 // process, or a handle from the debug-event loop). `oep`, when set, is the original entry point the
-// OEP finder caught — written into the dumped main image's header.
+// OEP finder caught, written into the dumped main image's header.
 fn dump_target(
     process: HANDLE,
     pid: u32,
@@ -613,7 +612,7 @@ fn dump_target(
     // is machine-visible and one bad region never aborts the whole dump.
     let mut notes: Vec<output::manifest::RegionNote> = Vec::new();
 
-    // Main image — the primary unpacking target.
+    // Main image: the primary unpacking target.
     let main_base = nt::read_peb(process)?.image_base_address as usize;
     let main_hollowed = report
         .module_diffs
@@ -623,7 +622,7 @@ fn dump_target(
     let mut main = reconstruct::dump_module_image(&reader, main_base)?;
 
     // Packers erase the import directory after the loader binds the IAT; rebuild it so the dump
-    // lands in IDA with named imports.
+    // loads in IDA with named imports.
     let (imports_state, confidence) = if reconstruct::imports::has_import_directory(&main.bytes) {
         ("original".to_string(), "high")
     } else {
@@ -715,7 +714,7 @@ fn dump_target(
         };
         let name =
             output::naming::filename(pid, m.base, output::naming::ArtifactKind::Hidden, false);
-        // A failed write degrades this module only — record it and move on, never abort the dump.
+        // A failed write degrades this module only: record it and move on, never abort the dump.
         if let Err(e) = std::fs::write(out.join(&name), &bytes) {
             vlog!(1, "failed to write hidden module {name}: {e}");
             notes.push(region_note(m.base, "hidden", "failed", e.to_string()));
@@ -742,7 +741,7 @@ fn dump_target(
     // Loose code chunks (always synthesized).
     for c in &report.code_chunks {
         let a = reconstruct::dump_code_chunk(&reader, c.base, c.size);
-        // Drop chunks that don't reference real imports — almost always data, not code.
+        // Drop chunks that don't reference real imports. Almost always data, not code.
         let cat = catalog.get_or_insert_with(|| {
             reconstruct::exports::ExportCatalog::build(&reader, &report.loader_modules)
         });
