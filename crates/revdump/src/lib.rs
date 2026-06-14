@@ -10,6 +10,7 @@ mod access;
 mod cli;
 mod discovery;
 mod error;
+mod filter;
 mod nt;
 mod output;
 mod reconstruct;
@@ -43,18 +44,43 @@ fn dispatch(action: cli::Action) -> Result<i32> {
     // M0: the argument surface and validation are wired; per-layer dispatch lands in later
     // milestones. Each arm reports the resolved request honestly rather than pretending to run.
     match action {
-        cli::Action::ManageDb(db) => {
-            let what = match db {
-                cli::DbAction::Gen => "gen".to_string(),
-                cli::DbAction::Clean => "clean".to_string(),
-                cli::DbAction::Add(dir) => format!("add {}", dir.display()),
-                cli::DbAction::Rem(dir) => format!("rem {}", dir.display()),
-            };
-            eprintln!("revdump: clean-hash DB management not implemented yet (scaffold): {what}");
-            Ok(0)
-        }
+        cli::Action::ManageDb(db) => manage_db(db),
         cli::Action::Dump(spec) => dispatch_dump(spec),
     }
+}
+
+fn manage_db(action: cli::DbAction) -> Result<i32> {
+    let mut db = filter::hashdb::CleanDb::load();
+    match action {
+        cli::DbAction::Gen => {
+            let added = db.generate();
+            db.save()?;
+            println!(
+                "clean-hash DB: hashed {added} system modules (total {})",
+                db.len()
+            );
+        }
+        cli::DbAction::Add(dir) => {
+            let added = db.add_dir(&dir, true);
+            db.save()?;
+            println!(
+                "clean-hash DB: added {added} from {} (total {})",
+                dir.display(),
+                db.len()
+            );
+        }
+        cli::DbAction::Rem(dir) => {
+            let removed = db.remove_dir(&dir, true);
+            db.save()?;
+            println!("clean-hash DB: removed {removed} (total {})", db.len());
+        }
+        cli::DbAction::Clean => {
+            db.clear();
+            db.save()?;
+            println!("clean-hash DB: cleared");
+        }
+    }
+    Ok(0)
 }
 
 fn dispatch_dump(spec: cli::DumpSpec) -> Result<i32> {
@@ -173,6 +199,20 @@ fn dump_pid(pid: u32, out: &std::path::Path, minidump: bool) -> Result<i32> {
     std::fs::create_dir_all(out)?;
     let mut artifacts = Vec::new();
 
+    let clean_db = filter::hashdb::CleanDb::load();
+    if clean_db.is_empty() {
+        vlog!(
+            1,
+            "clean-hash DB empty; run `-db gen` to exclude known-good modules"
+        );
+    }
+    // The export catalog is reused for both import reconstruction and chunk noise filtering, and
+    // is expensive to build, so create it lazily on first need.
+    let mut catalog: Option<reconstruct::exports::ExportCatalog> = None;
+    let ptr = core::mem::size_of::<usize>();
+    let mut skipped_known = 0usize;
+    let mut skipped_noise = 0usize;
+
     // Main image — the primary unpacking target.
     let main_base = nt::read_peb(proc.handle())?.image_base_address as usize;
     let main_hollowed = report
@@ -187,14 +227,16 @@ fn dump_pid(pid: u32, out: &std::path::Path, minidump: bool) -> Result<i32> {
     let (imports_state, confidence) = if reconstruct::imports::has_import_directory(&main.bytes) {
         ("original".to_string(), "high")
     } else {
-        let catalog = reconstruct::exports::ExportCatalog::build(&reader, &report.loader_modules);
-        match reconstruct::imports::rebuild_imports(&mut main.bytes, &catalog) {
+        let cat = catalog.get_or_insert_with(|| {
+            reconstruct::exports::ExportCatalog::build(&reader, &report.loader_modules)
+        });
+        match reconstruct::imports::rebuild_imports(&mut main.bytes, cat) {
             Some(s) => {
                 println!(
                     "  reconstructed imports: {} modules, {} functions (catalog {} exports)",
                     s.modules,
                     s.functions,
-                    catalog.len()
+                    cat.len()
                 );
                 (
                     format!(
@@ -238,6 +280,13 @@ fn dump_pid(pid: u32, out: &std::path::Path, minidump: bool) -> Result<i32> {
 
     // Hidden modules (real header if present, else a synthesized one).
     for m in &report.hidden_modules {
+        // Skip file-backed mappings that hash to a known-good module (e.g. resource DLLs).
+        if let Some(device) = &m.mapped_path {
+            if clean_db.contains_device_file(device) {
+                skipped_known += 1;
+                continue;
+            }
+        }
         let (bytes, pages, header) = match reconstruct::dump_module_image(&reader, m.base) {
             Ok(a) => (a.bytes, a.unreadable_pages, "original"),
             Err(_) => {
@@ -268,6 +317,14 @@ fn dump_pid(pid: u32, out: &std::path::Path, minidump: bool) -> Result<i32> {
     // Loose code chunks (always synthesized).
     for c in &report.code_chunks {
         let a = reconstruct::dump_code_chunk(&reader, c.base, c.size);
+        // Drop chunks that don't reference real imports — almost always data, not code.
+        let cat = catalog.get_or_insert_with(|| {
+            reconstruct::exports::ExportCatalog::build(&reader, &report.loader_modules)
+        });
+        if !filter::noise::is_plausible_code(&a.bytes, cat, ptr) {
+            skipped_noise += 1;
+            continue;
+        }
         let name =
             output::naming::filename(pid, c.base, output::naming::ArtifactKind::Chunk, false);
         std::fs::write(out.join(&name), &a.bytes)?;
@@ -294,7 +351,8 @@ fn dump_pid(pid: u32, out: &std::path::Path, minidump: bool) -> Result<i32> {
     };
     manifest.write(&out.join(format!("{pid}_manifest.json")))?;
     println!(
-        "wrote {} artifact(s) + manifest to {}",
+        "wrote {} artifact(s) + manifest to {} (skipped {skipped_known} known-good, \
+         {skipped_noise} noise)",
         manifest.artifacts.len(),
         out.display()
     );

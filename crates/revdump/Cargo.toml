@@ -13,4 +13,5 @@ windows-sys = { workspace = true }
 goblin = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
-# regex, sha2 are wired in per-milestone as the layers that need them land.
+sha2 = { workspace = true }
+# regex is wired in when the name-regex scope lands.
