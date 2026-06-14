@@ -32,7 +32,10 @@ pub fn open_process(pid: u32) -> Result<OwnedProcess> {
     // SAFETY: plain Win32 call; a null return signals failure.
     let handle = unsafe { OpenProcess(desired, 0, pid) };
     if !handle.is_null() {
-        return Ok(OwnedProcess { handle });
+        let proc = OwnedProcess { handle };
+        // Refuse a cross-bitness target before any PEB-dependent read (drops the handle on error).
+        nt::verify_dumpable_arch(proc.handle())?;
+        return Ok(proc);
     }
 
     // SAFETY: read the thread-local last-error immediately after the failed call.

@@ -151,6 +151,7 @@ fn dump_on_breakpoint(
     let exit_code = loop {
         match dbg.cont()? {
             debug::engine::Stop::InitialBreak => {
+                nt::verify_dumpable_arch(dbg.process())?;
                 if hide {
                     apply_hide(dbg.process())?;
                 }
@@ -238,6 +239,7 @@ fn oep_finder(
     loop {
         match dbg.cont()? {
             Stop::InitialBreak => {
+                nt::verify_dumpable_arch(dbg.process())?;
                 if hide {
                     interceptor = arm_anti_debug(&mut dbg)?;
                 }
@@ -340,6 +342,7 @@ fn launch_to_exit(
     let exit_code = loop {
         match dbg.cont()? {
             Stop::InitialBreak => {
+                nt::verify_dumpable_arch(dbg.process())?;
                 if hide {
                     interceptor = arm_anti_debug(&mut dbg)?;
                 }
@@ -391,6 +394,12 @@ fn run_system_sweep(out: &std::path::Path, minidump: bool) -> Result<i32> {
             Ok(()) => {
                 dumped += 1;
                 vlog!(1, "dumped pid {pid}");
+            }
+            // A cross-bitness target isn't ours to dump — skip it cleanly rather than emit the
+            // import-less, mis-classified output a foreign-PEB read would produce.
+            Err(RevError::ArchMismatch(_)) => {
+                skipped += 1;
+                vlog!(1, "pid {pid}: wrong arch");
             }
             Err(err) => {
                 skipped += 1;

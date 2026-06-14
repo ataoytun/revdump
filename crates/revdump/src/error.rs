@@ -20,6 +20,9 @@ pub enum RevError {
     #[error("target is protected ({0}); cannot dump from user mode")]
     Protected(String),
 
+    #[error("wrong architecture: {0}")]
+    ArchMismatch(String),
+
     #[error("discovery failed: {0}")]
     Discovery(String),
 

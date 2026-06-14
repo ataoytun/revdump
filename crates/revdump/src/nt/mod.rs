@@ -5,14 +5,16 @@ pub mod ffi;
 
 use core::ffi::c_void;
 use core::mem::{size_of, MaybeUninit};
+use std::sync::OnceLock;
 
 use windows_sys::Win32::Foundation::{HANDLE, NTSTATUS};
+use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
 use crate::error::{Result, RevError};
 use ffi::{
     nt_success, NtQueryInformationProcess, NtReadVirtualMemory, NtWriteVirtualMemory, Peb,
     ProcessBasicInformation, PsProtection, PROCESS_BASIC_INFORMATION_CLASS,
-    PROCESS_PROTECTION_INFORMATION, STATUS_PARTIAL_COPY,
+    PROCESS_PROTECTION_INFORMATION, PROCESS_WOW64_INFORMATION, STATUS_PARTIAL_COPY,
 };
 
 fn nt_check(call: &'static str, status: NTSTATUS) -> Result<()> {
@@ -138,4 +140,82 @@ pub fn read_peb(process: HANDLE) -> Result<Peb> {
     let base = peb_base(process)?;
     // SAFETY: Peb is repr(C) POD; read_pod fills it from target bytes.
     unsafe { read_pod::<Peb>(process, base) }
+}
+
+/// Whether `process` is a 32-bit process running under WOW64. ProcessWow64Information returns the
+/// target's PEB32 address (nonzero) for a WOW64 process, 0 for a native one.
+pub fn is_wow64(process: HANDLE) -> Result<bool> {
+    let mut wow64_peb: usize = 0;
+    let mut ret = 0u32;
+    // SAFETY: the class writes a single pointer-sized value into our buffer.
+    let status = unsafe {
+        NtQueryInformationProcess(
+            process,
+            PROCESS_WOW64_INFORMATION,
+            (&mut wow64_peb as *mut usize).cast(),
+            size_of::<usize>() as u32,
+            &mut ret,
+        )
+    };
+    nt_check("NtQueryInformationProcess(ProcessWow64Information)", status)?;
+    Ok(wow64_peb != 0)
+}
+
+// Whether *we* run under WOW64 (32-bit build on a 64-bit OS). Queried once for the lifetime of the
+// process; unwrap_or(false) keeps this infallible so it stays clean under deny(clippy::unwrap_used).
+fn self_is_wow64() -> bool {
+    static SELF_WOW64: OnceLock<bool> = OnceLock::new();
+    // SAFETY: GetCurrentProcess returns a pseudo-handle valid for the query.
+    *SELF_WOW64.get_or_init(|| is_wow64(unsafe { GetCurrentProcess() }).unwrap_or(false))
+}
+
+// Pure bitness decision, factored out so the per-arch rule is unit-testable without a live handle.
+// Returns the refusal reason, or None if the target is dumpable by this build.
+fn arch_mismatch_reason(
+    build64: bool,
+    self_wow64: bool,
+    target_wow64: bool,
+) -> Option<&'static str> {
+    if build64 {
+        // revdump64 dumps native 64-bit targets; a WOW64 target is 32-bit.
+        target_wow64.then_some("target is 32-bit (WOW64); use revdump32")
+    } else if self_wow64 {
+        // revdump32 on a 64-bit OS: a non-WOW64 target is native 64-bit.
+        (!target_wow64).then_some("target is 64-bit; use revdump64")
+    } else {
+        // 32-bit OS: every process is 32-bit — nothing to refuse.
+        None
+    }
+}
+
+/// Refuse a cross-bitness target up front, enforcing the build-time arch lock at runtime: dumping a
+/// foreign-bitness PEB/LDR would silently yield import-less, mis-classified output.
+pub fn verify_dumpable_arch(process: HANDLE) -> Result<()> {
+    let build64 = cfg!(target_pointer_width = "64");
+    let self_wow64 = !build64 && self_is_wow64();
+    let target_wow64 = is_wow64(process)?;
+    match arch_mismatch_reason(build64, self_wow64, target_wow64) {
+        Some(reason) => Err(RevError::ArchMismatch(reason.into())),
+        None => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::arch_mismatch_reason;
+
+    #[test]
+    fn arch_decision_table() {
+        // revdump64: dump native 64-bit, refuse 32-bit (WOW64).
+        assert!(arch_mismatch_reason(true, false, false).is_none());
+        assert!(arch_mismatch_reason(true, false, true).is_some());
+
+        // revdump32 on a 64-bit OS (self is WOW64): dump 32-bit (WOW64), refuse native 64-bit.
+        assert!(arch_mismatch_reason(false, true, true).is_none());
+        assert!(arch_mismatch_reason(false, true, false).is_some());
+
+        // revdump32 on a 32-bit OS (self not WOW64): every process is 32-bit, never refuse.
+        assert!(arch_mismatch_reason(false, false, false).is_none());
+        assert!(arch_mismatch_reason(false, false, true).is_none());
+    }
 }

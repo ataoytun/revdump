@@ -20,7 +20,10 @@ pub fn monitor(pid: u32, mut on_exit: impl FnMut(HANDLE) -> Result<()>) -> Resul
     let mut caught = false;
     loop {
         match dbg.cont()? {
-            Stop::InitialBreak => dbg.set_breakpoint(exit_addr)?,
+            Stop::InitialBreak => {
+                crate::nt::verify_dumpable_arch(dbg.process())?;
+                dbg.set_breakpoint(exit_addr)?;
+            }
             Stop::Breakpoint(_) => {
                 on_exit(dbg.process())?;
                 caught = true;
