@@ -167,18 +167,24 @@ Each run writes one directory under `-o` (default current directory), named
 - `deps/` loaded dependency modules, only with `--deps`.
 - `manifest.json` at the run-dir root, a sidecar describing the run. Each artifact records its file,
   kind, base and real base, size, unreadable-page count, header origin (original or synthesized),
-  import state (original, reconstructed, or none), a confidence label, and the detected `oep` when
-  dumped via `-oep`. Skipped or failed regions are listed under `notes` with a reason.
+  import state (original, reconstructed, or none), a confidence label, the detected `oep` when dumped
+  via `-oep`, and `name_source` (where a recovered name came from). Skipped or failed regions are
+  listed under `notes` with a reason.
 - `<pid>.dmp` at the root, a full-memory minidump, only with `-minidump`.
 
 A subdirectory appears only when it has content. Dependency modules are not dumped by default
 (known-good library code is better read from its on-disk file); `--deps` captures them, excluding any
 module whose on-disk file matches the clean-hash database.
 
-Artifact filenames are parseable: `pid_base_arch_kind[_hollow].ext`, where `arch` is `x64` or `x86`,
-`kind` is `main`, `hidden`, `chunk`, or `dep`, the `_hollow` tag marks a hollowed main image, and the
-extension is `exe` for images, `dll` for dependencies, or `bin` for raw chunks. For example,
-`main/1a4_7ff6a8530000_x64_main.exe`.
+Artifact filenames recover the module's name when one exists and fall back to the base address:
+`<name>_<base>_<arch>[_hollow].<ext>`, or `<base>_<arch>[_hollow].<ext>` when anonymous. The name
+comes from the mapped-file path, then the embedded export Name (both sanitized, since they are
+attacker-influenced); deps use the loader module name. The base address is always present so names
+stay unique, and the manifest's `name_source` records its origin (`mapped-file`, `export-name`,
+`loader`, or `address`). `arch` is `x64` or `x86`; `_hollow` marks a hollowed main image; the
+extension is the module's own where known, else `exe` for images or `bin` for raw chunks. For
+example, `deps/kernelbase_1e000000_x86.dll`, `modules/MMDevAPI.dll.mui_3cb0000_x86.exe`, or an
+anonymous `modules/2b00000_x86.exe`.
 
 ## Use
 

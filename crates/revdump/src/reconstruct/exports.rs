@@ -136,6 +136,33 @@ fn parse_module<R: MemoryReader>(
     }
 }
 
+/// The DLL name the linker stamped in the export directory (IMAGE_EXPORT_DIRECTORY.Name). Recovers a
+/// name for a manually-mapped module with no backing file. None if there's no PE header, no export
+/// directory, or no name.
+pub fn export_name<R: MemoryReader>(reader: &R, base: usize) -> Option<String> {
+    let (header, _) = read_best_effort(reader, base, PAGE_SIZE);
+    let view = PeView::parse(&header)?;
+    let dd = view.opt + pe::data_directory_offset(view.is_pe32_plus, pe::DIR_EXPORT);
+    let export_rva = pe::read_u32(&header, dd)? as usize;
+    if export_rva == 0 {
+        return None;
+    }
+    let mut dir = [0u8; 40];
+    if reader.read(base + export_rva, &mut dir).ok()? < dir.len() {
+        return None;
+    }
+    let name_rva = pe::read_u32(&dir, pe::EXPORT_NAME_OFFSET)? as usize;
+    if name_rva == 0 {
+        return None;
+    }
+    let name = read_c_string(reader, base + name_rva);
+    if name.is_empty() {
+        None
+    } else {
+        Some(name)
+    }
+}
+
 fn read_c_string<R: MemoryReader>(reader: &R, addr: usize) -> String {
     let mut buf = [0u8; 256];
     let n = reader.read(addr, &mut buf).unwrap_or(0);

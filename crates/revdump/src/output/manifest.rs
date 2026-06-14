@@ -50,6 +50,10 @@ pub struct Artifact {
     /// Original entry point detected by the OEP finder (absolute VA), when dumped via `-oep`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub oep: Option<String>,
+    /// Where a recovered name came from: "mapped-file" | "export-name" | "address" (hidden) or
+    /// "loader" (dep). None for main/chunk.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub name_source: Option<String>,
 }
 
 impl Manifest {

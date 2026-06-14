@@ -523,7 +523,12 @@ fn sweep_dump_main(pid: u32, out: &std::path::Path, minidump: bool, deps: bool) 
     let layout =
         output::layout::RunLayout::new(out, &image_name, pid, &output::layout::timestamp_local());
     layout.create_root()?;
-    let name = output::naming::filename(pid, main_base, output::naming::ArtifactKind::Main, false);
+    let name = module_filename(
+        &image_name,
+        main_base,
+        output::naming::ArtifactKind::Main.ext(),
+        false,
+    );
     std::fs::write(
         layout.dir(output::naming::ArtifactKind::Main)?.join(&name),
         &artifact.bytes,
@@ -542,13 +547,14 @@ fn sweep_dump_main(pid: u32, out: &std::path::Path, minidump: bool, deps: bool) 
         imports: imports.into(),
         confidence: confidence.into(),
         oep: None,
+        name_source: None,
     }];
     let mut notes = Vec::new();
     if deps {
         let clean_db = filter::hashdb::CleanDb::load();
         let modules = discovery::peb::enumerate_loader_modules(proc.handle())?;
         let (dep_artifacts, dep_notes) =
-            dump_deps(&reader, &modules, main_base, &clean_db, &layout, pid)?;
+            dump_deps(&reader, &modules, main_base, &clean_db, &layout)?;
         artifacts.extend(dep_artifacts);
         notes.extend(dep_notes);
     }
@@ -569,6 +575,35 @@ fn sweep_dump_main(pid: u32, out: &std::path::Path, minidump: bool, deps: bool) 
     Ok(())
 }
 
+// Filename for a main image or a dependency: the module's own name (stem + its real extension),
+// falling back to the kind's default extension and an address-only name when no usable name exists.
+fn module_filename(name: &str, base: usize, default_ext: &str, hollow: bool) -> String {
+    let (stem, ext) = output::naming::split_name(name);
+    let ext = ext.unwrap_or_else(|| default_ext.to_string());
+    output::naming::artifact_filename(base, &ext, stem.as_deref(), hollow)
+}
+
+// Recover a hidden module's name: the mapped file's leaf, else the embedded export Name, else none
+// (anonymous code keyed only by its address). Returns the sanitized stem and where it came from.
+fn hidden_name(
+    reader: &access::reader::ProcessReader,
+    m: &discovery::scan::HiddenModule,
+) -> (Option<String>, &'static str) {
+    if let Some(name) = m
+        .mapped_path
+        .as_deref()
+        .and_then(output::naming::sanitize_stem)
+    {
+        return (Some(name), "mapped-file");
+    }
+    if let Some(name) = reconstruct::exports::export_name(reader, m.base)
+        .and_then(|n| output::naming::sanitize_stem(&n))
+    {
+        return (Some(name), "export-name");
+    }
+    (None, "address")
+}
+
 // --deps: dump the target's loaded dependency modules into deps/. Skips the main image and any
 // module whose on-disk file is known-good (when the clean DB is populated); a per-dep failure
 // becomes a manifest note, never an abort. Returns the dep artifacts and notes.
@@ -578,7 +613,6 @@ fn dump_deps(
     main_base: usize,
     clean_db: &filter::hashdb::CleanDb,
     layout: &output::layout::RunLayout,
-    pid: u32,
 ) -> Result<(
     Vec<output::manifest::Artifact>,
     Vec<output::manifest::RegionNote>,
@@ -606,7 +640,12 @@ fn dump_deps(
                 continue;
             }
         };
-        let name = output::naming::filename(pid, m.base, output::naming::ArtifactKind::Dep, false);
+        let name = module_filename(
+            &m.base_name,
+            m.base,
+            output::naming::ArtifactKind::Dep.ext(),
+            false,
+        );
         let dir = layout.dir(output::naming::ArtifactKind::Dep)?;
         if let Err(e) = std::fs::write(dir.join(&name), &dumped.bytes) {
             vlog!(1, "failed to write dependency {name}: {e}");
@@ -627,6 +666,7 @@ fn dump_deps(
             imports: "original".into(),
             confidence: "high".into(),
             oep: None,
+            name_source: Some("loader".into()),
         });
     }
     Ok((artifacts, notes))
@@ -796,10 +836,10 @@ fn dump_target(
         }
     }
 
-    let main_name = output::naming::filename(
-        pid,
+    let main_name = module_filename(
+        &image_name,
         main_base,
-        output::naming::ArtifactKind::Main,
+        output::naming::ArtifactKind::Main.ext(),
         main_hollowed,
     );
     std::fs::write(
@@ -822,6 +862,7 @@ fn dump_target(
         imports: imports_state,
         confidence: confidence.into(),
         oep: oep.map(|a| format!("{a:#x}")),
+        name_source: None,
     });
     println!(
         "dumped main image @ {main_base:#x} ({} bytes, {} unreadable pages){}",
@@ -851,8 +892,13 @@ fn dump_target(
                 (a.bytes, a.unreadable_pages, "synthesized")
             }
         };
-        let name =
-            output::naming::filename(pid, m.base, output::naming::ArtifactKind::Hidden, false);
+        let (recovered, name_source) = hidden_name(&reader, m);
+        let name = output::naming::artifact_filename(
+            m.base,
+            output::naming::ArtifactKind::Hidden.ext(),
+            recovered.as_deref(),
+            false,
+        );
         let dir = layout.dir(output::naming::ArtifactKind::Hidden)?;
         // A failed write degrades this module only: record it and move on, never abort the dump.
         if let Err(e) = std::fs::write(dir.join(&name), &bytes) {
@@ -875,6 +921,7 @@ fn dump_target(
             imports: if synthesized { "none" } else { "original" }.into(),
             confidence: if synthesized { "low" } else { "medium" }.into(),
             oep: None,
+            name_source: Some(name_source.into()),
         });
     }
 
@@ -894,8 +941,12 @@ fn dump_target(
             ));
             continue;
         }
-        let name =
-            output::naming::filename(pid, c.base, output::naming::ArtifactKind::Chunk, false);
+        let name = output::naming::artifact_filename(
+            c.base,
+            output::naming::ArtifactKind::Chunk.ext(),
+            None,
+            false,
+        );
         let dir = layout.dir(output::naming::ArtifactKind::Chunk)?;
         if let Err(e) = std::fs::write(dir.join(&name), &a.bytes) {
             vlog!(1, "failed to write chunk {name}: {e}");
@@ -916,6 +967,7 @@ fn dump_target(
             imports: "none".into(),
             confidence: "low".into(),
             oep: None,
+            name_source: None,
         });
     }
 
@@ -927,7 +979,6 @@ fn dump_target(
             main_base,
             &clean_db,
             &layout,
-            pid,
         )?;
         let dumped = dep_artifacts.len();
         let skipped = dep_notes.iter().filter(|n| n.status == "skipped").count();

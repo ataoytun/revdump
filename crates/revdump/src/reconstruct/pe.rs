@@ -70,6 +70,7 @@ pub const fn data_directory_offset(pe32_plus: bool, index: usize) -> usize {
 }
 
 // IMAGE_EXPORT_DIRECTORY field offsets.
+pub const EXPORT_NAME_OFFSET: usize = 0x0C;
 pub const EXPORT_ORDINAL_BASE_OFFSET: usize = 0x10;
 pub const EXPORT_NUMBER_OF_FUNCTIONS_OFFSET: usize = 0x14;
 pub const EXPORT_NUMBER_OF_NAMES_OFFSET: usize = 0x18;
