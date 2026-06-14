@@ -94,27 +94,38 @@ fn dispatch_dump(spec: cli::DumpSpec) -> Result<i32> {
     vlog!(2, "output dir: {}", spec.out.display());
     match (&spec.scope, spec.addr, spec.closemon, spec.oep) {
         // Plain dump by PID: discovery, reconstruction, dump + manifest (+ optional minidump).
-        (cli::Scope::Pid(pid), None, false, false) => dump_pid(*pid, &spec.out, spec.minidump),
-        // -a: attach and dump when execution reaches the address.
-        (cli::Scope::Pid(pid), Some(addr), false, false) => {
-            dump_on_breakpoint(*pid, addr as usize, spec.hide, &spec.out, spec.minidump)
+        (cli::Scope::Pid(pid), None, false, false) => {
+            dump_pid(*pid, &spec.out, spec.minidump, spec.deps)
         }
+        // -a: attach and dump when execution reaches the address.
+        (cli::Scope::Pid(pid), Some(addr), false, false) => dump_on_breakpoint(
+            *pid,
+            addr as usize,
+            spec.hide,
+            &spec.out,
+            spec.minidump,
+            spec.deps,
+        ),
         // -closemon -pid X: dump X just before it exits.
-        (cli::Scope::Pid(pid), None, true, false) => run_closemon(*pid, &spec.out, spec.minidump),
+        (cli::Scope::Pid(pid), None, true, false) => {
+            run_closemon(*pid, &spec.out, spec.minidump, spec.deps)
+        }
         // -oep -pid X: unpack and dump at the original entry point.
         (cli::Scope::Pid(pid), None, false, true) => {
-            run_oep_finder(*pid, spec.hide, &spec.out, spec.minidump)
+            run_oep_finder(*pid, spec.hide, &spec.out, spec.minidump, spec.deps)
         }
         // --launch <cmd>: launch under the debugger (anti-debug before TLS/EP), then OEP or run.
         (cli::Scope::Launch(cmd), None, false, oep) => {
-            run_launch(cmd, spec.hide, oep, &spec.out, spec.minidump)
+            run_launch(cmd, spec.hide, oep, &spec.out, spec.minidump, spec.deps)
         }
         // -p <regex>: dump every accessible process whose image name matches.
         (cli::Scope::NameRegex(rx), None, false, false) => {
-            run_name_regex(rx, &spec.out, spec.minidump)
+            run_name_regex(rx, &spec.out, spec.minidump, spec.deps)
         }
         // -system: dump every accessible process's main image.
-        (cli::Scope::System, None, false, false) => run_system_sweep(&spec.out, spec.minidump),
+        (cli::Scope::System, None, false, false) => {
+            run_system_sweep(&spec.out, spec.minidump, spec.deps)
+        }
         _ => {
             let what = match &spec.scope {
                 cli::Scope::Pid(p) => format!("pid {p}"),
@@ -131,10 +142,10 @@ fn dispatch_dump(spec: cli::DumpSpec) -> Result<i32> {
 }
 
 // Dump a target by PID: acquire privilege, open it, and run the full dump pipeline.
-fn dump_pid(pid: u32, out: &std::path::Path, minidump: bool) -> Result<i32> {
+fn dump_pid(pid: u32, out: &std::path::Path, minidump: bool, deps: bool) -> Result<i32> {
     enable_se_debug();
     let proc = access::open::open_process(pid)?;
-    dump_target(proc.handle(), pid, out, minidump, None)
+    dump_target(proc.handle(), pid, out, minidump, None, deps)
 }
 
 fn enable_se_debug() {
@@ -151,6 +162,7 @@ fn dump_on_breakpoint(
     hide: bool,
     out: &std::path::Path,
     minidump: bool,
+    deps: bool,
 ) -> Result<i32> {
     enable_se_debug();
     let mut dbg = debug::engine::Debugger::attach(pid)?;
@@ -168,7 +180,7 @@ fn dump_on_breakpoint(
             }
             debug::engine::Stop::Breakpoint(hit) => {
                 println!("breakpoint hit at {hit:#x}; dumping");
-                let code = dump_target(dbg.process(), pid, out, minidump, None)?;
+                let code = dump_target(dbg.process(), pid, out, minidump, None, deps)?;
                 break code;
             }
             debug::engine::Stop::Exited(code) => {
@@ -184,12 +196,12 @@ fn dump_on_breakpoint(
 }
 
 // -closemon: catch a process just before it exits and dump it.
-fn run_closemon(pid: u32, out: &std::path::Path, minidump: bool) -> Result<i32> {
+fn run_closemon(pid: u32, out: &std::path::Path, minidump: bool, deps: bool) -> Result<i32> {
     enable_se_debug();
     println!("monitoring pid {pid} for termination");
     let caught = triggers::terminate::monitor(pid, |handle| {
         println!("pid {pid} is exiting; dumping before termination");
-        dump_target(handle, pid, out, minidump, None).map(|_| ())
+        dump_target(handle, pid, out, minidump, None, deps).map(|_| ())
     })?;
     if !caught {
         println!("pid {pid} exited before it could be caught");
@@ -222,11 +234,17 @@ fn arm_anti_debug(
 // -oep: attach, watch the packer make memory executable, strip execute so its jump into the
 // unpacked code faults, and dump at that fault (the original entry point). x64 only: reading the
 // VirtualProtect arguments uses the x64 register convention, and the x86 reads return an error.
-fn run_oep_finder(pid: u32, hide: bool, out: &std::path::Path, minidump: bool) -> Result<i32> {
+fn run_oep_finder(
+    pid: u32,
+    hide: bool,
+    out: &std::path::Path,
+    minidump: bool,
+    deps: bool,
+) -> Result<i32> {
     enable_se_debug();
     let dbg = debug::engine::Debugger::attach(pid)?;
     println!("attached to pid {pid}; watching for unpack");
-    oep_finder(dbg, pid, hide, out, minidump)
+    oep_finder(dbg, pid, hide, out, minidump, deps)
 }
 
 // The shared OEP loop, used by both --oep (attach) and --launch --oep.
@@ -236,6 +254,7 @@ fn oep_finder(
     hide: bool,
     out: &std::path::Path,
     minidump: bool,
+    deps: bool,
 ) -> Result<i32> {
     use debug::engine::Stop;
 
@@ -296,7 +315,7 @@ fn oep_finder(
                 {
                     println!("OEP reached at {address:#x}; dumping");
                     dbg.protect(base, size, orig)?;
-                    dump_target(dbg.process(), pid, out, minidump, Some(address))?;
+                    dump_target(dbg.process(), pid, out, minidump, Some(address), deps)?;
                     dbg.mark_handled();
                     dumped = true;
                     break;
@@ -321,15 +340,16 @@ fn run_launch(
     oep: bool,
     out: &std::path::Path,
     minidump: bool,
+    deps: bool,
 ) -> Result<i32> {
     enable_se_debug();
     let dbg = debug::engine::Debugger::launch(command)?;
     let pid = dbg.pid();
     println!("launched {command:?} as pid {pid}");
     if oep {
-        oep_finder(dbg, pid, hide, out, minidump)
+        oep_finder(dbg, pid, hide, out, minidump, deps)
     } else {
-        launch_to_exit(dbg, pid, hide, out, minidump)
+        launch_to_exit(dbg, pid, hide, out, minidump, deps)
     }
 }
 
@@ -341,6 +361,7 @@ fn launch_to_exit(
     hide: bool,
     out: &std::path::Path,
     minidump: bool,
+    deps: bool,
 ) -> Result<i32> {
     use debug::engine::Stop;
 
@@ -366,7 +387,7 @@ fn launch_to_exit(
                 }
                 if addr == terminate && !dumped {
                     println!("pid {pid} is exiting; dumping before termination");
-                    dump_target(dbg.process(), pid, out, minidump, None)?;
+                    dump_target(dbg.process(), pid, out, minidump, None, deps)?;
                     dumped = true;
                 }
             }
@@ -405,7 +426,7 @@ fn region_note(
 
 // -p <regex>: dump each accessible process whose leaf image name matches. Per-pid failures (access
 // denied, wrong arch) degrade to skips so one unreadable process doesn't sink the batch.
-fn run_name_regex(pattern: &str, out: &std::path::Path, minidump: bool) -> Result<i32> {
+fn run_name_regex(pattern: &str, out: &std::path::Path, minidump: bool, deps: bool) -> Result<i32> {
     enable_se_debug();
     let re =
         regex::Regex::new(pattern).map_err(|e| RevError::Cli(format!("invalid -p regex: {e}")))?;
@@ -422,7 +443,7 @@ fn run_name_regex(pattern: &str, out: &std::path::Path, minidump: bool) -> Resul
             continue;
         }
         matched += 1;
-        match dump_target_by_pid(pid, out, minidump) {
+        match dump_target_by_pid(pid, out, minidump, deps) {
             Ok(()) => {
                 dumped += 1;
                 vlog!(1, "dumped {name} (pid {pid})");
@@ -442,13 +463,13 @@ fn run_name_regex(pattern: &str, out: &std::path::Path, minidump: bool) -> Resul
 }
 
 // Open + full dump pipeline for one pid, returning (): the per-pid unit the name sweep batches.
-fn dump_target_by_pid(pid: u32, out: &std::path::Path, minidump: bool) -> Result<()> {
+fn dump_target_by_pid(pid: u32, out: &std::path::Path, minidump: bool, deps: bool) -> Result<()> {
     let proc = access::open::open_process(pid)?;
-    dump_target(proc.handle(), pid, out, minidump, None).map(|_| ())
+    dump_target(proc.handle(), pid, out, minidump, None, deps).map(|_| ())
 }
 
 // -system: dump every accessible process's main image.
-fn run_system_sweep(out: &std::path::Path, minidump: bool) -> Result<i32> {
+fn run_system_sweep(out: &std::path::Path, minidump: bool, deps: bool) -> Result<i32> {
     enable_se_debug();
     let me = std::process::id();
     let mut dumped = 0u32;
@@ -457,7 +478,7 @@ fn run_system_sweep(out: &std::path::Path, minidump: bool) -> Result<i32> {
         if pid == me {
             continue;
         }
-        match sweep_dump_main(pid, out, minidump) {
+        match sweep_dump_main(pid, out, minidump, deps) {
             Ok(()) => {
                 dumped += 1;
                 vlog!(1, "dumped pid {pid}");
@@ -481,7 +502,7 @@ fn run_system_sweep(out: &std::path::Path, minidump: bool) -> Result<i32> {
 // Lightweight per-process dump for the sweep: the main image (with import reconstruction if the
 // directory was erased) plus a manifest, into a per-pid run dir. No discovery diff or chunk scan,
 // to keep a whole-system pass quick.
-fn sweep_dump_main(pid: u32, out: &std::path::Path, minidump: bool) -> Result<()> {
+fn sweep_dump_main(pid: u32, out: &std::path::Path, minidump: bool, deps: bool) -> Result<()> {
     let proc = access::open::open_process(pid)?;
     let reader = access::reader::ProcessReader::new(proc.handle());
     let main_base = nt::read_peb(proc.handle())?.image_base_address as usize;
@@ -507,25 +528,35 @@ fn sweep_dump_main(pid: u32, out: &std::path::Path, minidump: bool) -> Result<()
         layout.dir(output::naming::ArtifactKind::Main)?.join(&name),
         &artifact.bytes,
     )?;
+    let mut artifacts = vec![output::manifest::Artifact {
+        file: name,
+        kind: "main".into(),
+        base: format!("{main_base:#x}"),
+        real_base: format!("{main_base:#x}"),
+        size: artifact.bytes.len(),
+        original_protection: None,
+        hidden: false,
+        hollowed: false,
+        unreadable_pages: artifact.unreadable_pages,
+        header: "original".into(),
+        imports: imports.into(),
+        confidence: confidence.into(),
+        oep: None,
+    }];
+    let mut notes = Vec::new();
+    if deps {
+        let clean_db = filter::hashdb::CleanDb::load();
+        let modules = discovery::peb::enumerate_loader_modules(proc.handle())?;
+        let (dep_artifacts, dep_notes) =
+            dump_deps(&reader, &modules, main_base, &clean_db, &layout, pid)?;
+        artifacts.extend(dep_artifacts);
+        notes.extend(dep_notes);
+    }
     let manifest = output::manifest::Manifest {
         pid,
         arch: output::naming::arch_tag().into(),
-        artifacts: vec![output::manifest::Artifact {
-            file: name,
-            kind: "main".into(),
-            base: format!("{main_base:#x}"),
-            real_base: format!("{main_base:#x}"),
-            size: artifact.bytes.len(),
-            original_protection: None,
-            hidden: false,
-            hollowed: false,
-            unreadable_pages: artifact.unreadable_pages,
-            header: "original".into(),
-            imports: imports.into(),
-            confidence: confidence.into(),
-            oep: None,
-        }],
-        notes: Vec::new(),
+        artifacts,
+        notes,
     };
     manifest.write(&layout.manifest_path())?;
     if minidump {
@@ -538,6 +569,69 @@ fn sweep_dump_main(pid: u32, out: &std::path::Path, minidump: bool) -> Result<()
     Ok(())
 }
 
+// --deps: dump the target's loaded dependency modules into deps/. Skips the main image and any
+// module whose on-disk file is known-good (when the clean DB is populated); a per-dep failure
+// becomes a manifest note, never an abort. Returns the dep artifacts and notes.
+fn dump_deps(
+    reader: &access::reader::ProcessReader,
+    modules: &[discovery::peb::LoaderModule],
+    main_base: usize,
+    clean_db: &filter::hashdb::CleanDb,
+    layout: &output::layout::RunLayout,
+    pid: u32,
+) -> Result<(
+    Vec<output::manifest::Artifact>,
+    Vec<output::manifest::RegionNote>,
+)> {
+    let mut artifacts = Vec::new();
+    let mut notes = Vec::new();
+    for m in modules {
+        if m.base == main_base {
+            continue; // the main image is dumped separately
+        }
+        // A populated clean DB trims known-good libraries; an empty DB dumps them all.
+        if !clean_db.is_empty() && clean_db.contains_file(std::path::Path::new(&m.full_name)) {
+            notes.push(region_note(
+                m.base,
+                "dep",
+                "skipped",
+                "known-good module".into(),
+            ));
+            continue;
+        }
+        let dumped = match reconstruct::dump_module_image(reader, m.base) {
+            Ok(a) => a,
+            Err(e) => {
+                notes.push(region_note(m.base, "dep", "failed", e.to_string()));
+                continue;
+            }
+        };
+        let name = output::naming::filename(pid, m.base, output::naming::ArtifactKind::Dep, false);
+        let dir = layout.dir(output::naming::ArtifactKind::Dep)?;
+        if let Err(e) = std::fs::write(dir.join(&name), &dumped.bytes) {
+            vlog!(1, "failed to write dependency {name}: {e}");
+            notes.push(region_note(m.base, "dep", "failed", e.to_string()));
+            continue;
+        }
+        artifacts.push(output::manifest::Artifact {
+            file: name,
+            kind: "dep".into(),
+            base: format!("{:#x}", m.base),
+            real_base: format!("{:#x}", m.base),
+            size: dumped.bytes.len(),
+            original_protection: None,
+            hidden: false,
+            hollowed: false,
+            unreadable_pages: dumped.unreadable_pages,
+            header: "original".into(),
+            imports: "original".into(),
+            confidence: "high".into(),
+            oep: None,
+        });
+    }
+    Ok((artifacts, notes))
+}
+
 // Discovery + reconstruction + output against an already-open target handle (a freshly opened
 // process, or a handle from the debug-event loop). `oep`, when set, is the original entry point the
 // OEP finder caught, written into the dumped main image's header.
@@ -547,6 +641,7 @@ fn dump_target(
     out: &std::path::Path,
     minidump: bool,
     oep: Option<usize>,
+    deps: bool,
 ) -> Result<i32> {
     let reader = access::reader::ProcessReader::new(process);
     let report = discovery::scan_process(process, &reader)?;
@@ -824,6 +919,25 @@ fn dump_target(
         });
     }
 
+    // --deps: also capture loaded dependency modules (off by default).
+    let (dep_dumped, dep_skipped) = if deps {
+        let (dep_artifacts, dep_notes) = dump_deps(
+            &reader,
+            &report.loader_modules,
+            main_base,
+            &clean_db,
+            &layout,
+            pid,
+        )?;
+        let dumped = dep_artifacts.len();
+        let skipped = dep_notes.iter().filter(|n| n.status == "skipped").count();
+        artifacts.extend(dep_artifacts);
+        notes.extend(dep_notes);
+        (dumped, skipped)
+    } else {
+        (0, 0)
+    };
+
     let skipped = notes.iter().filter(|n| n.status == "skipped").count();
     let failed = notes.iter().filter(|n| n.status == "failed").count();
     let manifest = output::manifest::Manifest {
@@ -838,6 +952,14 @@ fn dump_target(
         manifest.artifacts.len(),
         layout.root().display()
     );
+    if deps {
+        println!("dependencies: dumped {dep_dumped}, skipped {dep_skipped} known-good");
+    } else {
+        println!(
+            "loader modules: {} (known-good, not dumped; pass --deps to include)",
+            report.loader_modules.len()
+        );
+    }
 
     if minidump {
         let dmp = layout.root().join(format!("{pid}.dmp"));

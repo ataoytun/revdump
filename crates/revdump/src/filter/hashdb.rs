@@ -96,6 +96,12 @@ impl CleanDb {
         let nt_path = format!("\\\\?\\GLOBALROOT{device_path}");
         hash_file(Path::new(&nt_path)).is_some_and(|h| self.hashes.contains(&h))
     }
+
+    /// True if the on-disk file at `path` (a normal DOS path, e.g. a loader module's full name)
+    /// hashes to a known-good module.
+    pub fn contains_file(&self, path: &Path) -> bool {
+        hash_file(path).is_some_and(|h| self.hashes.contains(&h))
+    }
 }
 
 fn for_each_pe(dir: &Path, recursive: bool, visit: &mut impl FnMut(&Path)) {

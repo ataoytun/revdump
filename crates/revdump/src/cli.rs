@@ -62,6 +62,11 @@ pub struct Cli {
     #[arg(long = "hide")]
     pub hide: bool,
 
+    /// Also dump the target's loaded dependency modules (off by default; for clean library code
+    /// prefer the on-disk file)
+    #[arg(long = "deps")]
+    pub deps: bool,
+
     /// Verbose output (repeat for more)
     #[arg(short = 'v', long = "verbose", action = ArgAction::Count)]
     pub verbose: u8,
@@ -136,6 +141,7 @@ pub struct DumpSpec {
     pub oep: bool,
     pub hide: bool,
     pub minidump: bool,
+    pub deps: bool,
     pub out: PathBuf,
 }
 
@@ -153,6 +159,7 @@ impl Cli {
             oep,
             launch,
             hide,
+            deps,
             ..
         } = self;
 
@@ -167,6 +174,7 @@ impl Cli {
                 || oep
                 || launch.is_some()
                 || hide
+                || deps
             {
                 return Err(RevError::Cli(
                     "-db is a standalone mode and cannot be combined with target or dump options"
@@ -242,6 +250,7 @@ impl Cli {
             oep,
             hide,
             minidump,
+            deps,
             out,
         }))
     }
@@ -303,6 +312,7 @@ mod tests {
             oep: false,
             launch: None,
             hide: false,
+            deps: false,
             verbose: 0,
         }
     }

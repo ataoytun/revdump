@@ -6,6 +6,7 @@ pub enum ArtifactKind {
     Main,
     Hidden,
     Chunk,
+    Dep,
 }
 
 impl ArtifactKind {
@@ -14,12 +15,14 @@ impl ArtifactKind {
             ArtifactKind::Main => "main",
             ArtifactKind::Hidden => "hidden",
             ArtifactKind::Chunk => "chunk",
+            ArtifactKind::Dep => "dep",
         }
     }
 
     fn ext(self) -> &'static str {
         match self {
             ArtifactKind::Chunk => "bin",
+            ArtifactKind::Dep => "dll",
             _ => "exe",
         }
     }
@@ -30,6 +33,7 @@ impl ArtifactKind {
             ArtifactKind::Main => "main",
             ArtifactKind::Hidden => "modules",
             ArtifactKind::Chunk => "chunks",
+            ArtifactKind::Dep => "deps",
         }
     }
 }
