@@ -1,0 +1,13 @@
+[package]
+name = "revdump"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "User-mode reverse-engineering memory dumper — shared core (Scylla / PE-sieve / Process Dump family)"
+
+[dependencies]
+clap = { workspace = true }
+thiserror = { workspace = true }
+# windows-sys, goblin, regex, sha2, serde, serde_json are wired in per-milestone as the
+# layers that need them land.

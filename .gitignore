@@ -1,0 +1,13 @@
+/target
+**/*.rs.bk
+*.pdb
+
+# IDE / editor
+/.idea
+/.vscode
+*.iml
+*.code-workspace
+
+# OS
+.DS_Store
+Thumbs.db

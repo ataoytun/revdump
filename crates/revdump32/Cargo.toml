@@ -1,0 +1,10 @@
+[package]
+name = "revdump32"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "revdump for 32-bit targets (build for i686-pc-windows-msvc)"
+
+[dependencies]
+revdump = { workspace = true }

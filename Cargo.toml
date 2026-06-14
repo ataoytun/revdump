@@ -1,0 +1,39 @@
+[workspace]
+resolver = "2"
+members = ["crates/revdump", "crates/revdump32", "crates/revdump64"]
+# Bare `cargo build`/`clippy` operate on the lib only; the two bin shims are arch-locked
+# (compile_error! on the wrong width) and must be built per-target via the .cargo aliases.
+default-members = ["crates/revdump"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+# offset_of! (used for the NT struct layout asserts at M1) stabilized in 1.77.
+rust-version = "1.77"
+repository = ""
+
+[workspace.dependencies]
+revdump = { path = "crates/revdump" }
+clap = { version = "4.5", features = ["derive"] }
+thiserror = "2.0"
+regex = "1.11"
+sha2 = "0.10"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+goblin = "0.9"
+# Feature set is finalized at M1 when the FFI layer first compiles against it.
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_System_Memory",
+    "Win32_System_ProcessStatus",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_Security",
+    "Win32_System_Kernel",
+] }
+
+[profile.release]
+opt-level = 2
+strip = true

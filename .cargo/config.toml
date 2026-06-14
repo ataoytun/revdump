@@ -1,0 +1,9 @@
+# revdump builds one binary per architecture (pd32/pd64 model). Each shim is locked to its
+# width with compile_error!, so always pair the package with its target via these aliases.
+[alias]
+build-32 = "build --release -p revdump32 --target i686-pc-windows-msvc"
+build-64 = "build --release -p revdump64 --target x86_64-pc-windows-msvc"
+check-32 = "check -p revdump32 --target i686-pc-windows-msvc"
+check-64 = "check -p revdump64 --target x86_64-pc-windows-msvc"
+clippy-32 = "clippy -p revdump32 --target i686-pc-windows-msvc"
+clippy-64 = "clippy -p revdump64 --target x86_64-pc-windows-msvc"
