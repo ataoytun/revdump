@@ -8,12 +8,15 @@
 mod log;
 mod access;
 mod cli;
+mod debug;
 mod discovery;
 mod error;
 mod filter;
 mod nt;
 mod output;
 mod reconstruct;
+
+use windows_sys::Win32::Foundation::HANDLE;
 
 pub use error::{RegionOutcome, Result, RevError};
 
@@ -91,6 +94,10 @@ fn dispatch_dump(spec: cli::DumpSpec) -> Result<i32> {
     match (&spec.scope, spec.addr, spec.closemon) {
         // The single-PID path: discovery, reconstruction, dump + manifest (+ optional minidump).
         (cli::Scope::Pid(pid), None, false) => dump_pid(*pid, &spec.out, spec.minidump),
+        // -a: attach as a debugger and dump when execution reaches the address.
+        (cli::Scope::Pid(pid), Some(addr), false) => {
+            dump_on_breakpoint(*pid, addr as usize, &spec.out, spec.minidump)
+        }
         _ => {
             let what = match &spec.scope {
                 cli::Scope::Pid(p) => format!("pid {p}"),
@@ -106,16 +113,53 @@ fn dispatch_dump(spec: cli::DumpSpec) -> Result<i32> {
     }
 }
 
-// M3: discovery summary plus a memory-aligned dump of the main image to the output dir.
+// Dump a target by PID: acquire privilege, open it, and run the full dump pipeline.
 fn dump_pid(pid: u32, out: &std::path::Path, minidump: bool) -> Result<i32> {
+    enable_se_debug();
+    let proc = access::open::open_process(pid)?;
+    dump_target(proc.handle(), pid, out, minidump)
+}
+
+fn enable_se_debug() {
     match access::privilege::enable_se_debug() {
         Ok(held) => vlog!(1, "SeDebugPrivilege held: {held}"),
         Err(err) => vlog!(1, "SeDebugPrivilege: {err}"),
     }
+}
 
-    let proc = access::open::open_process(pid)?;
-    let reader = access::reader::ProcessReader::new(&proc);
-    let report = discovery::scan_process(proc.handle(), &reader)?;
+// Attach as a debugger, arm a software breakpoint at `addr`, and dump when execution reaches it.
+fn dump_on_breakpoint(pid: u32, addr: usize, out: &std::path::Path, minidump: bool) -> Result<i32> {
+    enable_se_debug();
+    let mut dbg = debug::engine::Debugger::attach(pid)?;
+    println!("attached to pid {pid}; arming breakpoint at {addr:#x}");
+
+    let exit_code = loop {
+        match dbg.cont()? {
+            debug::engine::Stop::InitialBreak => {
+                // Anti-debug PEB patches (M7) will hook in here, before TLS/EP.
+                dbg.set_breakpoint(addr)?;
+                vlog!(1, "initial loader breakpoint reached; breakpoint armed");
+            }
+            debug::engine::Stop::Breakpoint(hit) => {
+                println!("breakpoint hit at {hit:#x}; dumping");
+                let code = dump_target(dbg.process(), pid, out, minidump)?;
+                break code;
+            }
+            debug::engine::Stop::Exited(code) => {
+                println!("target exited (code {code}) before the breakpoint was reached");
+                break 1;
+            }
+        }
+    };
+    dbg.detach()?;
+    Ok(exit_code)
+}
+
+// Discovery + reconstruction + output against an already-open target handle (a freshly opened
+// process, or a handle from the debug-event loop).
+fn dump_target(process: HANDLE, pid: u32, out: &std::path::Path, minidump: bool) -> Result<i32> {
+    let reader = access::reader::ProcessReader::new(process);
+    let report = discovery::scan_process(process, &reader)?;
 
     let exec_regions = report.regions.iter().filter(|r| r.is_executable()).count();
     let suspicious: Vec<_> = report
@@ -214,7 +258,7 @@ fn dump_pid(pid: u32, out: &std::path::Path, minidump: bool) -> Result<i32> {
     let mut skipped_noise = 0usize;
 
     // Main image — the primary unpacking target.
-    let main_base = nt::read_peb(proc.handle())?.image_base_address as usize;
+    let main_base = nt::read_peb(process)?.image_base_address as usize;
     let main_hollowed = report
         .module_diffs
         .iter()
@@ -359,7 +403,7 @@ fn dump_pid(pid: u32, out: &std::path::Path, minidump: bool) -> Result<i32> {
 
     if minidump {
         let dmp = out.join(format!("{pid}.dmp"));
-        match output::minidump::write_minidump(proc.handle(), pid, &dmp) {
+        match output::minidump::write_minidump(process, pid, &dmp) {
             Ok(()) => println!("wrote minidump -> {}", dmp.display()),
             Err(err) => eprintln!("revdump: minidump failed: {err}"),
         }

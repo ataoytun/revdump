@@ -1,4 +1,5 @@
-use crate::access::open::OwnedProcess;
+use windows_sys::Win32::Foundation::HANDLE;
+
 use crate::error::Result;
 use crate::nt;
 
@@ -8,20 +9,22 @@ pub trait MemoryReader {
     fn read(&self, addr: usize, buf: &mut [u8]) -> Result<usize>;
 }
 
-/// Reads via the open process handle. Borrows the process so the handle can't outlive it.
-pub struct ProcessReader<'a> {
-    proc: &'a OwnedProcess,
+/// Reads target memory through a process handle. The caller owns the handle's lifetime — both a
+/// freshly-opened [`OwnedProcess`](crate::access::open::OwnedProcess) handle and a debug-event
+/// handle outlive the reads done with them.
+pub struct ProcessReader {
+    handle: HANDLE,
 }
 
-impl<'a> ProcessReader<'a> {
-    pub fn new(proc: &'a OwnedProcess) -> Self {
-        Self { proc }
+impl ProcessReader {
+    pub fn new(handle: HANDLE) -> Self {
+        Self { handle }
     }
 }
 
-impl MemoryReader for ProcessReader<'_> {
+impl MemoryReader for ProcessReader {
     fn read(&self, addr: usize, buf: &mut [u8]) -> Result<usize> {
-        nt::read_memory(self.proc.handle(), addr, buf)
+        nt::read_memory(self.handle, addr, buf)
     }
 }
 
