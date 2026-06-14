@@ -129,18 +129,54 @@ pub fn set_call_arg(tid: u32, index: usize, value: usize) -> Result<()> {
     result
 }
 
-// x86 (stdcall) passes these on the stack; the OEP finder's stack-argument support isn't built
+/// Read the stack pointer (x64: RSP) — used to fetch a callee's return address from [RSP].
+#[cfg(target_arch = "x86_64")]
+pub fn read_stack_pointer(tid: u32) -> Result<usize> {
+    let thread = open(tid)?;
+    let result = get(thread, CONTEXT_CONTROL).map(|ctx| ctx.0.Rsp as usize);
+    unsafe { CloseHandle(thread) };
+    result
+}
+
+/// Overwrite the return value register (x64: RAX) — used to spoof an NTSTATUS at a syscall return.
+#[cfg(target_arch = "x86_64")]
+pub fn set_return_value(tid: u32, value: usize) -> Result<()> {
+    let thread = open(tid)?;
+    let result = (|| {
+        let mut ctx = get(thread, CONTEXT_INTEGER)?;
+        ctx.0.Rax = value as u64;
+        set(thread, &ctx)
+    })();
+    unsafe { CloseHandle(thread) };
+    result
+}
+
+// x86 (stdcall) passes these on the stack; the register-convention helpers aren't built for x86
 // yet, so report it rather than silently misbehave.
 #[cfg(not(target_arch = "x86_64"))]
 pub fn read_call_args(_tid: u32) -> Result<[usize; 4]> {
     Err(RevError::Access(
-        "VirtualProtect argument inspection is not implemented on x86".into(),
+        "call-argument inspection is not implemented on x86".into(),
     ))
 }
 
 #[cfg(not(target_arch = "x86_64"))]
 pub fn set_call_arg(_tid: u32, _index: usize, _value: usize) -> Result<()> {
     Err(RevError::Access(
-        "VirtualProtect argument modification is not implemented on x86".into(),
+        "call-argument modification is not implemented on x86".into(),
+    ))
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn read_stack_pointer(_tid: u32) -> Result<usize> {
+    Err(RevError::Access(
+        "stack-pointer access is not implemented on x86".into(),
+    ))
+}
+
+#[cfg(not(target_arch = "x86_64"))]
+pub fn set_return_value(_tid: u32, _value: usize) -> Result<()> {
+    Err(RevError::Access(
+        "return-value override is not implemented on x86".into(),
     ))
 }

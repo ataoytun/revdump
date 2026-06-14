@@ -196,6 +196,19 @@ fn apply_hide(process: HANDLE) -> Result<()> {
     Ok(())
 }
 
+// Apply the PEB/heap patches and (on x64) arm the syscall-result interceptor.
+fn arm_anti_debug(
+    dbg: &mut debug::engine::Debugger,
+) -> Result<Option<antidebug::intercept::Interceptor>> {
+    apply_hide(dbg.process())?;
+    if cfg!(target_arch = "x86_64") {
+        Ok(Some(antidebug::intercept::Interceptor::arm(dbg)?))
+    } else {
+        // The interceptor uses the x64 register convention; on x86 the PEB patches still apply.
+        Ok(None)
+    }
+}
+
 // -oep: attach, watch the packer make memory executable, strip execute so its jump to the
 // unpacked code faults, and dump at that fault — the original entry point. x64-only for now:
 // reading the VirtualProtect arguments uses the x64 register convention (the x86 reads error out).
@@ -221,11 +234,12 @@ fn oep_finder(
         .ok_or_else(|| RevError::Access("could not resolve NtProtectVirtualMemory".into()))?;
 
     let mut dumped = false;
+    let mut interceptor: Option<antidebug::intercept::Interceptor> = None;
     loop {
         match dbg.cont()? {
             Stop::InitialBreak => {
                 if hide {
-                    apply_hide(dbg.process())?;
+                    interceptor = arm_anti_debug(&mut dbg)?;
                 }
                 // Track TLS callbacks so a pre-EP callback isn't mistaken for the OEP, then arm
                 // the alloc-watch.
@@ -237,20 +251,28 @@ fn oep_finder(
                 execmem.record_tls(&cbs);
                 dbg.set_persistent_breakpoint(protect_fn)?;
             }
-            // NtProtectVirtualMemory(handle, *BaseAddress, *RegionSize, NewProtect, *OldProtect)
-            Stop::Breakpoint(addr) if addr == protect_fn => {
-                let args = debug::context::read_call_args(dbg.current_thread())?;
-                let new_protect = args[3] as u32;
-                if triggers::oep::is_executable(new_protect) {
-                    let base = read_ptr_field(dbg.process(), args[1])?;
-                    let size = read_ptr_field(dbg.process(), args[2])?;
-                    execmem.watch(base, size, new_protect);
-                    debug::context::set_call_arg(
-                        dbg.current_thread(),
-                        3,
-                        triggers::oep::strip_execute(new_protect) as usize,
-                    )?;
-                    vlog!(1, "flipped exec region {base:#x}..{:#x}", base + size);
+            Stop::Breakpoint(addr) => {
+                // Anti-debug syscall interception consumes its own breakpoints first.
+                if let Some(ic) = interceptor.as_mut() {
+                    if ic.on_breakpoint(&mut dbg, addr)? {
+                        continue;
+                    }
+                }
+                // NtProtectVirtualMemory(handle, *BaseAddress, *RegionSize, NewProtect, *OldProtect)
+                if addr == protect_fn {
+                    let args = debug::context::read_call_args(dbg.current_thread())?;
+                    let new_protect = args[3] as u32;
+                    if triggers::oep::is_executable(new_protect) {
+                        let base = read_ptr_field(dbg.process(), args[1])?;
+                        let size = read_ptr_field(dbg.process(), args[2])?;
+                        execmem.watch(base, size, new_protect);
+                        debug::context::set_call_arg(
+                            dbg.current_thread(),
+                            3,
+                            triggers::oep::strip_execute(new_protect) as usize,
+                        )?;
+                        vlog!(1, "flipped exec region {base:#x}..{:#x}", base + size);
+                    }
                 }
             }
             Stop::Exception { code, address, .. }
@@ -314,16 +336,23 @@ fn launch_to_exit(
     let terminate = debug::symbols::ntdll_export("NtTerminateProcess")
         .ok_or_else(|| RevError::Access("could not resolve NtTerminateProcess".into()))?;
     let mut dumped = false;
+    let mut interceptor: Option<antidebug::intercept::Interceptor> = None;
     let exit_code = loop {
         match dbg.cont()? {
             Stop::InitialBreak => {
                 if hide {
-                    apply_hide(dbg.process())?;
+                    interceptor = arm_anti_debug(&mut dbg)?;
                 }
                 dbg.set_breakpoint(terminate)?;
             }
-            Stop::Breakpoint(_) => {
-                if !dumped {
+            Stop::Breakpoint(addr) => {
+                // Anti-debug syscall interception consumes its own breakpoints first.
+                if let Some(ic) = interceptor.as_mut() {
+                    if ic.on_breakpoint(&mut dbg, addr)? {
+                        continue;
+                    }
+                }
+                if addr == terminate && !dumped {
                     println!("pid {pid} is exiting; dumping before termination");
                     dump_target(dbg.process(), pid, out, minidump)?;
                     dumped = true;
