@@ -4,6 +4,9 @@
 //! dumping its own architecture natively to sidestep WOW64 cross-bitness. All logic lives here;
 //! the binaries are thin arch-locked shims.
 
+// Production code never panics on a Result/Option — unwrap/expect stay confined to tests.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 #[macro_use]
 mod log;
 mod access;
