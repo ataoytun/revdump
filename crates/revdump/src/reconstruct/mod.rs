@@ -2,7 +2,9 @@
 //! section de-virtualization now, header synthesis and import rebuild in following commits.
 
 pub mod devirt;
+pub mod exports;
 pub mod header;
+pub mod imports;
 pub mod pe;
 
 use crate::access::reader::{read_best_effort, MemoryReader, PAGE_SIZE};

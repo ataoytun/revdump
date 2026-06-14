@@ -171,7 +171,21 @@ fn dump_pid(pid: u32, out: &std::path::Path) -> Result<i32> {
 
     std::fs::create_dir_all(out)?;
     let main_base = nt::read_peb(proc.handle())?.image_base_address as usize;
-    let artifact = reconstruct::dump_module_image(&reader, main_base)?;
+    let mut artifact = reconstruct::dump_module_image(&reader, main_base)?;
+    // Packers erase the import directory after the loader binds the IAT; rebuild it so the dump
+    // lands in IDA with named imports.
+    if !reconstruct::imports::has_import_directory(&artifact.bytes) {
+        let catalog = reconstruct::exports::ExportCatalog::build(&reader, &report.loader_modules);
+        match reconstruct::imports::rebuild_imports(&mut artifact.bytes, &catalog) {
+            Some(stats) => println!(
+                "  reconstructed imports: {} modules, {} functions (catalog {} exports)",
+                stats.modules,
+                stats.functions,
+                catalog.len()
+            ),
+            None => vlog!(1, "  no resolvable IAT found; left import directory empty"),
+        }
+    }
     let path = out.join(format!("{pid}_{:x}_main.exe", artifact.base));
     std::fs::write(&path, &artifact.bytes)?;
     println!(
