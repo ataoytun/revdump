@@ -123,6 +123,14 @@ extern "system" {
         bytes_read: *mut usize,
     ) -> NTSTATUS;
 
+    pub fn NtWriteVirtualMemory(
+        process: HANDLE,
+        base: *mut c_void,
+        buffer: *const c_void,
+        size: usize,
+        bytes_written: *mut usize,
+    ) -> NTSTATUS;
+
     pub fn NtQueryInformationProcess(
         process: HANDLE,
         class: i32,

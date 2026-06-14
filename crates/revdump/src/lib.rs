@@ -7,6 +7,7 @@
 #[macro_use]
 mod log;
 mod access;
+mod antidebug;
 mod cli;
 mod debug;
 mod discovery;
@@ -94,12 +95,18 @@ fn dispatch_dump(spec: cli::DumpSpec) -> Result<i32> {
         (cli::Scope::Pid(pid), None, false, false) => dump_pid(*pid, &spec.out, spec.minidump),
         // -a: attach and dump when execution reaches the address.
         (cli::Scope::Pid(pid), Some(addr), false, false) => {
-            dump_on_breakpoint(*pid, addr as usize, &spec.out, spec.minidump)
+            dump_on_breakpoint(*pid, addr as usize, spec.hide, &spec.out, spec.minidump)
         }
         // -closemon -pid X: dump X just before it exits.
         (cli::Scope::Pid(pid), None, true, false) => run_closemon(*pid, &spec.out, spec.minidump),
         // -oep -pid X: unpack and dump at the original entry point.
-        (cli::Scope::Pid(pid), None, false, true) => run_oep_finder(*pid, &spec.out, spec.minidump),
+        (cli::Scope::Pid(pid), None, false, true) => {
+            run_oep_finder(*pid, spec.hide, &spec.out, spec.minidump)
+        }
+        // --launch <cmd>: launch under the debugger (anti-debug before TLS/EP), then OEP or run.
+        (cli::Scope::Launch(cmd), None, false, oep) => {
+            run_launch(cmd, spec.hide, oep, &spec.out, spec.minidump)
+        }
         // -system: dump every accessible process's main image.
         (cli::Scope::System, None, false, false) => run_system_sweep(&spec.out, spec.minidump),
         _ => {
@@ -107,6 +114,7 @@ fn dispatch_dump(spec: cli::DumpSpec) -> Result<i32> {
                 cli::Scope::Pid(p) => format!("pid {p}"),
                 cli::Scope::NameRegex(rx) => format!("name ~ /{rx}/"),
                 cli::Scope::System => "system".to_string(),
+                cli::Scope::Launch(cmd) => format!("launch {cmd}"),
             };
             eprintln!("revdump: dump mode for {what} not implemented yet");
             Ok(0)
@@ -129,7 +137,13 @@ fn enable_se_debug() {
 }
 
 // Attach as a debugger, arm a software breakpoint at `addr`, and dump when execution reaches it.
-fn dump_on_breakpoint(pid: u32, addr: usize, out: &std::path::Path, minidump: bool) -> Result<i32> {
+fn dump_on_breakpoint(
+    pid: u32,
+    addr: usize,
+    hide: bool,
+    out: &std::path::Path,
+    minidump: bool,
+) -> Result<i32> {
     enable_se_debug();
     let mut dbg = debug::engine::Debugger::attach(pid)?;
     println!("attached to pid {pid}; arming breakpoint at {addr:#x}");
@@ -137,7 +151,9 @@ fn dump_on_breakpoint(pid: u32, addr: usize, out: &std::path::Path, minidump: bo
     let exit_code = loop {
         match dbg.cont()? {
             debug::engine::Stop::InitialBreak => {
-                // Anti-debug PEB patches (M7) will hook in here, before TLS/EP.
+                if hide {
+                    apply_hide(dbg.process())?;
+                }
                 dbg.set_breakpoint(addr)?;
                 vlog!(1, "initial loader breakpoint reached; breakpoint armed");
             }
@@ -172,25 +188,47 @@ fn run_closemon(pid: u32, out: &std::path::Path, minidump: bool) -> Result<i32> 
     Ok(if caught { 0 } else { 1 })
 }
 
+// Neutralize common anti-debug checks at the initial loader breakpoint (before TLS/EP).
+fn apply_hide(process: HANDLE) -> Result<()> {
+    let peb_base = nt::peb_base(process)?;
+    antidebug::peb_patch::neutralize(process, peb_base)?;
+    vlog!(1, "anti-debug: PEB/heap flags neutralized");
+    Ok(())
+}
+
 // -oep: attach, watch the packer make memory executable, strip execute so its jump to the
 // unpacked code faults, and dump at that fault — the original entry point. x64-only for now:
 // reading the VirtualProtect arguments uses the x64 register convention (the x86 reads error out).
-fn run_oep_finder(pid: u32, out: &std::path::Path, minidump: bool) -> Result<i32> {
+fn run_oep_finder(pid: u32, hide: bool, out: &std::path::Path, minidump: bool) -> Result<i32> {
+    enable_se_debug();
+    let dbg = debug::engine::Debugger::attach(pid)?;
+    println!("attached to pid {pid}; watching for unpack");
+    oep_finder(dbg, pid, hide, out, minidump)
+}
+
+// The shared OEP loop, used by both --oep (attach) and --launch --oep.
+fn oep_finder(
+    mut dbg: debug::engine::Debugger,
+    pid: u32,
+    hide: bool,
+    out: &std::path::Path,
+    minidump: bool,
+) -> Result<i32> {
     use debug::engine::Stop;
 
-    enable_se_debug();
-    let mut dbg = debug::engine::Debugger::attach(pid)?;
     let mut execmem = triggers::execmem::ExecMem::default();
     let protect_fn = debug::symbols::ntdll_export("NtProtectVirtualMemory")
         .ok_or_else(|| RevError::Access("could not resolve NtProtectVirtualMemory".into()))?;
-    println!("attached to pid {pid}; watching for unpack");
 
     let mut dumped = false;
     loop {
         match dbg.cont()? {
             Stop::InitialBreak => {
+                if hide {
+                    apply_hide(dbg.process())?;
+                }
                 // Track TLS callbacks so a pre-EP callback isn't mistaken for the OEP, then arm
-                // the alloc-watch. (Anti-debug patches hook in here at M7.)
+                // the alloc-watch.
                 let peb = nt::read_peb(dbg.process())?;
                 let cbs = debug::tls::callbacks(dbg.process(), peb.image_base_address as usize);
                 if !cbs.is_empty() {
@@ -240,6 +278,64 @@ fn run_oep_finder(pid: u32, out: &std::path::Path, minidump: bool) -> Result<i32
     }
     dbg.detach()?;
     Ok(if dumped { 0 } else { 1 })
+}
+
+// --launch: start the target under the debugger (so anti-debug patches land before TLS/EP), then
+// either find the OEP or run to exit, dumping along the way.
+fn run_launch(
+    command: &str,
+    hide: bool,
+    oep: bool,
+    out: &std::path::Path,
+    minidump: bool,
+) -> Result<i32> {
+    enable_se_debug();
+    let dbg = debug::engine::Debugger::launch(command)?;
+    let pid = dbg.pid();
+    println!("launched {command:?} as pid {pid}");
+    if oep {
+        oep_finder(dbg, pid, hide, out, minidump)
+    } else {
+        launch_to_exit(dbg, pid, hide, out, minidump)
+    }
+}
+
+// Run a launched target (anti-debug applied at the initial break), dump it just before it
+// terminates, and report its exit code.
+fn launch_to_exit(
+    mut dbg: debug::engine::Debugger,
+    pid: u32,
+    hide: bool,
+    out: &std::path::Path,
+    minidump: bool,
+) -> Result<i32> {
+    use debug::engine::Stop;
+
+    let terminate = debug::symbols::ntdll_export("NtTerminateProcess")
+        .ok_or_else(|| RevError::Access("could not resolve NtTerminateProcess".into()))?;
+    let mut dumped = false;
+    let exit_code = loop {
+        match dbg.cont()? {
+            Stop::InitialBreak => {
+                if hide {
+                    apply_hide(dbg.process())?;
+                }
+                dbg.set_breakpoint(terminate)?;
+            }
+            Stop::Breakpoint(_) => {
+                if !dumped {
+                    println!("pid {pid} is exiting; dumping before termination");
+                    dump_target(dbg.process(), pid, out, minidump)?;
+                    dumped = true;
+                }
+            }
+            Stop::Exited(code) => break code,
+            Stop::Exception { .. } => {}
+        }
+    };
+    dbg.detach()?;
+    println!("pid {pid} exited with code {exit_code} ({exit_code:#x})");
+    Ok(0)
 }
 
 fn read_ptr_field(process: HANDLE, addr: usize) -> Result<usize> {

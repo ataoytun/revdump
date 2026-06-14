@@ -8,6 +8,9 @@ use windows_sys::Win32::System::Diagnostics::Debug::{
     ReadProcessMemory, WaitForDebugEvent, WriteProcessMemory, DEBUG_EVENT,
 };
 use windows_sys::Win32::System::Memory::VirtualProtectEx;
+use windows_sys::Win32::System::Threading::{
+    CreateProcessW, DEBUG_ONLY_THIS_PROCESS, DEBUG_PROCESS, PROCESS_INFORMATION, STARTUPINFOW,
+};
 
 use crate::debug::context;
 use crate::error::{Result, RevError};
@@ -57,16 +60,10 @@ pub struct Debugger {
 }
 
 impl Debugger {
-    pub fn attach(pid: u32) -> Result<Debugger> {
-        // SAFETY: documented debug API; a zero return means failure.
-        if unsafe { DebugActiveProcess(pid) } == 0 {
-            return Err(RevError::Access(format!(
-                "DebugActiveProcess({pid}) failed"
-            )));
-        }
+    fn new(pid: u32) -> Debugger {
         // Keep the target alive when we detach.
         unsafe { DebugSetProcessKillOnExit(0) };
-        Ok(Debugger {
+        Debugger {
             pid,
             process: core::ptr::null_mut(),
             breakpoints: HashMap::new(),
@@ -75,11 +72,63 @@ impl Debugger {
             pending: None,
             initial_seen: false,
             last_thread: 0,
-        })
+        }
+    }
+
+    /// Attach to a running process. Its initial breakpoint (injected on attach) fires *after*
+    /// startup — so TLS callbacks and the entry point have already run.
+    pub fn attach(pid: u32) -> Result<Debugger> {
+        // SAFETY: documented debug API; a zero return means failure.
+        if unsafe { DebugActiveProcess(pid) } == 0 {
+            return Err(RevError::Access(format!(
+                "DebugActiveProcess({pid}) failed"
+            )));
+        }
+        Ok(Self::new(pid))
+    }
+
+    /// Launch a process under the debugger. Its initial breakpoint fires after the loader maps the
+    /// image+dependencies but *before* TLS callbacks / the entry point — the point at which
+    /// anti-debug patches must land.
+    pub fn launch(command: &str) -> Result<Debugger> {
+        let mut cmdline: Vec<u16> = command.encode_utf16().chain(core::iter::once(0)).collect();
+        // SAFETY: zero-initialized startup info with cb set; CreateProcessW needs a writable
+        // command line and fills `pi`.
+        let ok = unsafe {
+            let mut si: STARTUPINFOW = core::mem::zeroed();
+            si.cb = core::mem::size_of::<STARTUPINFOW>() as u32;
+            let mut pi: PROCESS_INFORMATION = core::mem::zeroed();
+            let created = CreateProcessW(
+                core::ptr::null(),
+                cmdline.as_mut_ptr(),
+                core::ptr::null(),
+                core::ptr::null(),
+                0,
+                DEBUG_PROCESS | DEBUG_ONLY_THIS_PROCESS,
+                core::ptr::null(),
+                core::ptr::null(),
+                &si,
+                &mut pi,
+            );
+            if created == 0 {
+                return Err(RevError::Access(format!(
+                    "CreateProcessW failed for {command:?}"
+                )));
+            }
+            // The real process handle arrives via the CREATE_PROCESS debug event; drop the extras.
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+            pi.dwProcessId
+        };
+        Ok(Self::new(ok))
     }
 
     pub fn process(&self) -> HANDLE {
         self.process
+    }
+
+    pub fn pid(&self) -> u32 {
+        self.pid
     }
 
     /// Thread id of the most recent stop — needed to read/modify its registers.

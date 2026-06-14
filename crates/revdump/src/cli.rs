@@ -52,6 +52,15 @@ pub struct Cli {
     #[arg(long = "oep")]
     pub oep: bool,
 
+    /// Launch an executable under the debugger and dump it (combine with --hide / --oep)
+    #[arg(long = "launch", value_name = "PATH")]
+    pub launch: Option<PathBuf>,
+
+    /// Neutralize common anti-debug checks (BeingDebugged, NtGlobalFlag, heap flags) at the
+    /// initial loader breakpoint, before TLS callbacks / the entry point
+    #[arg(long = "hide")]
+    pub hide: bool,
+
     /// Verbose output (repeat for more)
     #[arg(short = 'v', long = "verbose", action = ArgAction::Count)]
     pub verbose: u8,
@@ -84,6 +93,8 @@ fn remap_legacy_flag(arg: OsString) -> OsString {
         "-db" => "--db",
         "-minidump" => "--minidump",
         "-oep" => "--oep",
+        "-launch" => "--launch",
+        "-hide" => "--hide",
         _ => return arg,
     };
     match value {
@@ -112,6 +123,8 @@ pub enum Scope {
     Pid(u32),
     NameRegex(String),
     System,
+    /// Launch this command under the debugger.
+    Launch(String),
 }
 
 #[derive(Debug)]
@@ -120,6 +133,7 @@ pub struct DumpSpec {
     pub addr: Option<u64>,
     pub closemon: bool,
     pub oep: bool,
+    pub hide: bool,
     pub minidump: bool,
     pub out: PathBuf,
 }
@@ -136,6 +150,8 @@ impl Cli {
             db,
             minidump,
             oep,
+            launch,
+            hide,
             ..
         } = self;
 
@@ -148,6 +164,8 @@ impl Cli {
                 || closemon
                 || minidump
                 || oep
+                || launch.is_some()
+                || hide
             {
                 return Err(RevError::Cli(
                     "-db is a standalone mode and cannot be combined with target or dump options"
@@ -157,10 +175,13 @@ impl Cli {
             return Ok(Action::ManageDb(parse_db(db)?));
         }
 
-        let scope_count = u8::from(pid.is_some()) + u8::from(name.is_some()) + u8::from(system);
+        let scope_count = u8::from(pid.is_some())
+            + u8::from(name.is_some())
+            + u8::from(system)
+            + u8::from(launch.is_some());
         if scope_count > 1 {
             return Err(RevError::Cli(
-                "choose only one target scope: -pid, -p, or -system".into(),
+                "choose only one target scope: -pid, -p, -system, or --launch".into(),
             ));
         }
 
@@ -168,6 +189,8 @@ impl Cli {
             Scope::Pid(pid)
         } else if let Some(regex) = name {
             Scope::NameRegex(regex)
+        } else if let Some(path) = launch {
+            Scope::Launch(path.to_string_lossy().into_owned())
         } else if system {
             Scope::System
         } else if closemon {
@@ -175,7 +198,7 @@ impl Cli {
             Scope::System
         } else {
             return Err(RevError::Cli(
-                "no target: specify -pid, -p, -system, or -closemon".into(),
+                "no target: specify -pid, -p, -system, --launch, or -closemon".into(),
             ));
         };
 
@@ -188,8 +211,8 @@ impl Cli {
             ));
         }
         if oep {
-            if !matches!(scope, Scope::Pid(_)) {
-                return Err(RevError::Cli("-oep requires -pid".into()));
+            if !matches!(scope, Scope::Pid(_) | Scope::Launch(_)) {
+                return Err(RevError::Cli("-oep requires -pid or --launch".into()));
             }
             if addr.is_some() || closemon {
                 return Err(RevError::Cli(
@@ -197,12 +220,18 @@ impl Cli {
                 ));
             }
         }
+        if hide && !(matches!(scope, Scope::Launch(_)) || addr.is_some() || oep) {
+            return Err(RevError::Cli(
+                "--hide applies only with --launch, -a, or -oep".into(),
+            ));
+        }
 
         Ok(Action::Dump(DumpSpec {
             scope,
             addr,
             closemon,
             oep,
+            hide,
             minidump,
             out,
         }))
@@ -263,6 +292,8 @@ mod tests {
             db: None,
             minidump: false,
             oep: false,
+            launch: None,
+            hide: false,
             verbose: 0,
         }
     }

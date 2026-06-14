@@ -10,9 +10,9 @@ use windows_sys::Win32::Foundation::{HANDLE, NTSTATUS};
 
 use crate::error::{Result, RevError};
 use ffi::{
-    nt_success, NtQueryInformationProcess, NtReadVirtualMemory, Peb, ProcessBasicInformation,
-    PsProtection, PROCESS_BASIC_INFORMATION_CLASS, PROCESS_PROTECTION_INFORMATION,
-    STATUS_PARTIAL_COPY,
+    nt_success, NtQueryInformationProcess, NtReadVirtualMemory, NtWriteVirtualMemory, Peb,
+    ProcessBasicInformation, PsProtection, PROCESS_BASIC_INFORMATION_CLASS,
+    PROCESS_PROTECTION_INFORMATION, STATUS_PARTIAL_COPY,
 };
 
 fn nt_check(call: &'static str, status: NTSTATUS) -> Result<()> {
@@ -106,6 +106,28 @@ pub fn query_protection(process: HANDLE) -> Result<PsProtection> {
         status,
     )?;
     Ok(prot)
+}
+
+pub fn write_memory(process: HANDLE, addr: usize, data: &[u8]) -> Result<()> {
+    let mut written = 0usize;
+    // SAFETY: ntdll writes data.len() bytes from our buffer into the target.
+    let status = unsafe {
+        NtWriteVirtualMemory(
+            process,
+            addr as *mut c_void,
+            data.as_ptr().cast(),
+            data.len(),
+            &mut written,
+        )
+    };
+    nt_check("NtWriteVirtualMemory", status)?;
+    if written != data.len() {
+        return Err(RevError::Access(format!(
+            "short write at {addr:#x}: {written}/{} bytes",
+            data.len()
+        )));
+    }
+    Ok(())
 }
 
 pub fn peb_base(process: HANDLE) -> Result<usize> {
